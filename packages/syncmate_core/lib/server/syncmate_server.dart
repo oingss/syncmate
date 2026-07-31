@@ -165,6 +165,8 @@ class SyncMateServer {
         await _handleUploadCancel(request);
       } else if (path == '/api/files/move' && request.method == 'POST') {
         await _handleMove(request);
+      } else if (path == '/api/files/copy' && request.method == 'POST') {
+        await _handleCopy(request);
       } else if (path == '/api/files/delete' && request.method == 'DELETE') {
         await _handleDelete(request);
       } else if (path == '/api/files/mkdir' && request.method == 'POST') {
@@ -398,6 +400,47 @@ class SyncMateServer {
     try {
       final actual = await _fs.move(from, to);
       _audit('move', fingerprint, from, extra: '-> $actual');
+      await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': actual});
+    } on FsException catch (e) {
+      await _writeFsError(request, e);
+    }
+  }
+
+  Future<void> _handleCopy(HttpRequest request) async {
+    if (!await _isTrusted(request)) {
+      await _writeError(
+        request,
+        HttpStatus.forbidden,
+        ApiErrorCode.forbidden,
+        'not trusted',
+      );
+      return;
+    }
+    final body = await _readJsonBody(request);
+    if (body == null) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'invalid json body',
+      );
+      return;
+    }
+    final from = body['from'];
+    final to = body['to'];
+    if (from is! String || from.isEmpty || to is! String || to.isEmpty) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'missing from/to',
+      );
+      return;
+    }
+    final fingerprint = request.headers.value(_headerFingerprint)!;
+    try {
+      final actual = await _fs.copy(from, to);
+      _audit('copy', fingerprint, from, extra: '-> $actual');
       await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': actual});
     } on FsException catch (e) {
       await _writeFsError(request, e);

@@ -30,6 +30,9 @@ class TransferTask {
     required this.localPath,
     required this.toRemote,
     this.isDirectory = false,
+    this.sourceBaseUrl,
+    this.moveAfter = false,
+    this.labelOverride,
   });
 
   final String id;
@@ -37,6 +40,14 @@ class TransferTask {
   String localPath;
   final bool toRemote;
   final bool isDirectory;
+
+  /// 设备→设备模式：源设备 baseUrl（非 null 表示两个不同设备之间复制）。
+  final String? sourceBaseUrl;
+
+  /// 设备→设备模式：传输成功后删除源路径（即"移动"）。
+  final bool moveAfter;
+
+  final String? labelOverride;
   final TransferCancel cancelToken = TransferCancel();
 
   int total = 0;
@@ -46,7 +57,7 @@ class TransferTask {
   String? error;
   String? finalRemotePath;
 
-  String get label => toRemote ? localPath : remotePath;
+  String get label => labelOverride ?? (toRemote ? localPath : remotePath);
 
   double get progress => total <= 0 ? 0 : done / total;
 }
@@ -116,12 +127,37 @@ class TransferService {
     );
   }
 
+  /// 设备→设备复制：经本机临时目录中转，[move] 为 true 时成功后删除源。
+  Future<TransferTask> copyBetweenDevices({
+    required DiscoveredDevice from,
+    required String fromPath,
+    required DiscoveredDevice to,
+    required String toPath,
+    bool move = false,
+  }) {
+    final name = _baseName(fromPath);
+    return _add(
+      device: to,
+      remotePath: toPath,
+      localPath: fromPath,
+      toRemote: true,
+      isDirectory: true,
+      sourceBaseUrl: from.baseUrl,
+      moveAfter: move,
+      labelOverride:
+          '${move ? '移动' : '复制'}（${from.alias} → ${to.alias}）$name',
+    );
+  }
+
   Future<TransferTask> _add({
     required DiscoveredDevice device,
     required String remotePath,
     required String localPath,
     required bool toRemote,
     bool isDirectory = false,
+    String? sourceBaseUrl,
+    bool moveAfter = false,
+    String? labelOverride,
   }) async {
     final task = TransferTask(
       id: 't${_nextId++}',
@@ -129,6 +165,9 @@ class TransferService {
       localPath: localPath,
       toRemote: toRemote,
       isDirectory: isDirectory,
+      sourceBaseUrl: sourceBaseUrl,
+      moveAfter: moveAfter,
+      labelOverride: labelOverride,
     );
     _tasks[task.id] = task;
     _events.add(TaskAdded(task));
@@ -155,7 +194,16 @@ class TransferService {
     );
     final meter = _SpeedMeter();
     try {
-      if (task.isDirectory) {
+      if (task.sourceBaseUrl != null) {
+        final fromClient = _clients.putIfAbsent(
+          'src|${task.sourceBaseUrl}',
+          () => SyncMateClient(
+            baseUrl: task.sourceBaseUrl!,
+            fingerprint: self.fingerprint,
+          ),
+        );
+        await _runBetweenDevices(task, fromClient, client, meter);
+      } else if (task.isDirectory) {
         if (task.toRemote) {
           await _runDirUpload(task, client, meter);
         } else {
@@ -192,6 +240,69 @@ class TransferService {
       task.speed = 0;
     } finally {
       _events.add(TaskFinished(task));
+    }
+  }
+
+  /// 设备→设备：下载到本机临时目录，再上传到目标设备；moveAfter 时删源。
+  Future<void> _runBetweenDevices(
+    TransferTask task,
+    SyncMateClient fromClient,
+    SyncMateClient toClient,
+    _SpeedMeter meter,
+  ) async {
+    final tmpRoot = await Directory.systemTemp.createTemp('syncmate_between_');
+    try {
+      int? fileSize;
+      try {
+        fileSize = await fromClient.fileSize(task.localPath);
+      } on ApiException {
+        fileSize = null;
+      }
+      if (fileSize != null) {
+        // 源为单个文件
+        task.total = fileSize;
+        _emit(task);
+        if (fileSize > 0) {
+          final tmpFile =
+              _joinPath(tmpRoot.path, _baseName(task.localPath));
+          await _downloadFile(task, fromClient, meter, task.localPath, tmpFile);
+          await _uploadFile(task, toClient, meter, tmpFile, task.remotePath);
+        }
+      } else {
+        // 源为目录：递归收集后逐个传输
+        final files = <_RemoteFileEntry>[];
+        await _walkRemote(fromClient, task.localPath, tmpRoot.path, files);
+        task.total = files.fold(0, (sum, f) => sum + f.size);
+        _emit(task);
+
+        if (files.isEmpty) {
+          try {
+            await toClient.mkdir(task.remotePath);
+          } on ApiException {
+            // 目录已存在等情况可接受
+          }
+        } else {
+          await _ensureRemoteDirs(toClient, files, task.remotePath);
+          for (final f in files) {
+            if (task.cancelToken.cancelled) throw const _Cancelled();
+            await _downloadFile(task, fromClient, meter, f.remote, f.local);
+            await _uploadFile(task, toClient, meter, f.local, f.remote);
+          }
+        }
+      }
+      if (task.moveAfter) {
+        try {
+          await fromClient.delete(task.localPath, recursive: true);
+        } on Object catch (e) {
+          task.error = '复制完成，但删除源失败：$e';
+        }
+      }
+    } finally {
+      try {
+        await tmpRoot.delete(recursive: true);
+      } on Object {
+        // 临时目录清理失败不影响结果
+      }
     }
   }
 
@@ -541,6 +652,11 @@ class TransferService {
     final name = path.split(Platform.isWindows ? '\\' : '/').last;
     final dot = name.lastIndexOf('.');
     return dot <= 0 ? '' : name.substring(dot);
+  }
+
+  String _baseName(String path) {
+    final name = path.split(Platform.isWindows ? '\\' : '/').last;
+    return name.isEmpty ? path : name;
   }
 
   Future<List<int>> _readFully(RandomAccessFile raf, int length) async {

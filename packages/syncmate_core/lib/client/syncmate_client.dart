@@ -191,6 +191,27 @@ class SyncMateClient {
     }
   }
 
+  /// 复制（文件或目录递归；目标已存在时服务端自动重命名），返回实际路径。
+  Future<String> copy(String from, String to) async {
+    final uri = Uri.parse('$baseUrl/api/files/copy');
+    final request = await _http.postUrl(uri).timeout(Constants.connectTimeout);
+    request.headers.set(_headerFingerprint, _fingerprint);
+    request.headers.contentType = ContentType.json;
+    request.write(jsonEncode({'from': from, 'to': to}));
+    final response = await request.close().timeout(Constants.connectTimeout);
+    final text = await utf8.decoder.bind(response).join();
+    if (response.statusCode != HttpStatus.ok) {
+      throw _parseError(response.statusCode, text);
+    }
+    try {
+      final json = jsonDecode(text);
+      if (json is! Map<String, dynamic>) throw const FormatException();
+      return json['path'] as String? ?? to;
+    } on Object {
+      throw const ApiException(ApiErrorCode.badRequest, 'malformed response');
+    }
+  }
+
   /// 删除（目录需 recursive=true）。
   Future<void> delete(String path, {bool recursive = true}) async {
     final encoded = base64Url.encode(utf8.encode(path));

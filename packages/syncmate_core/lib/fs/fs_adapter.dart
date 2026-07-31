@@ -49,6 +49,9 @@ abstract class FileSystemAdapter {
   /// 移动/重命名（跨文件系统时复制+删除兜底），返回实际路径。
   Future<String> move(String from, String to);
 
+  /// 复制（文件或目录递归复制）；目标已存在时自动重命名，返回实际路径。
+  Future<String> copy(String from, String to);
+
   /// 删除；目录必须 recursive=true，否则 [FsException(badRequest)]。
   Future<void> delete(String path, {required bool recursive});
 
@@ -342,6 +345,29 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
     } else {
       await File(src).copy(dst);
     }
+  }
+
+  @override
+  Future<String> copy(String from, String to) async {
+    final src = await normalizePath(from);
+    final dstBase = await normalizePath(to);
+    final type = await FileSystemEntity.type(src);
+    if (type == FileSystemEntityType.notFound) {
+      throw FsException(FsErrorKind.notFound, 'path not found: $from');
+    }
+    final separator = Platform.isWindows ? p.separator : '/';
+    if (dstBase.startsWith('$src$separator')) {
+      throw const FsException(FsErrorKind.badRequest, 'cannot copy into itself');
+    }
+    final dst = await uniquePath(dstBase);
+    try {
+      await _copyRecursive(src, dst);
+    } on FsException {
+      rethrow;
+    } on Object catch (e) {
+      throw FsException(FsErrorKind.ioError, e.toString());
+    }
+    return dst;
   }
 
   Future<void> _deleteRecursive(String path) async {
