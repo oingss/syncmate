@@ -528,7 +528,10 @@ class _RemotePaneState extends State<_RemotePane> {
         _entries = list.entries;
         _loading = false;
       });
-      widget.onPathChanged(_path);
+      // 根目录时报告第一个存储根作为复制目标，保证双向复制在根目录也可用
+      widget.onPathChanged(
+        _path ?? (_entries.isEmpty ? null : _entries.first.name),
+      );
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -833,7 +836,10 @@ class _LocalPaneState extends State<_LocalPane> {
         _entries = entries;
         _loading = false;
       });
-      widget.onPathChanged(_path);
+      // 根目录时报告第一个存储根作为复制目标
+      widget.onPathChanged(
+        _path ?? (_entries.isEmpty ? null : _entries.first.name),
+      );
     } on FsException catch (e) {
       if (!mounted) return;
       setState(() {
