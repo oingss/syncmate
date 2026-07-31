@@ -195,9 +195,13 @@ class ClipboardService {
 
   Future<void> _connectOutgoing(_PeerSession session) async {
     if (session.closing || !_enabled) return;
+    final baseUrl = session.baseUrl;
+    if (baseUrl == null) return;
     try {
+      final wsUri =
+          Uri.parse(baseUrl).replace(scheme: 'ws', path: Constants.wsPath);
       final ws = await WebSocket.connect(
-        'ws://${session.baseUrl}${Constants.wsPath}',
+        wsUri.toString(),
         headers: {_headerFingerprint: _self.fingerprint},
       ).timeout(Constants.connectTimeout);
       if (session.closing || !_enabled) {
