@@ -81,12 +81,26 @@ abstract class FileSystemAdapter {
 }
 
 class LocalFileSystemAdapter implements FileSystemAdapter {
+  /// 显式指定存储根（如 iOS 的 App 文档目录）；为空时按平台探测。
+  LocalFileSystemAdapter({List<String>? roots}) : _rootsOverride = roots;
+
+  final List<String>? _rootsOverride;
   List<String>? _rootCache;
 
   @override
   Future<List<FileEntry>> roots() async {
     final paths = <String>[];
-    if (Platform.isWindows) {
+    final override = _rootsOverride;
+    if (override != null && override.isNotEmpty) {
+      for (final root in override) {
+        final normalized = p.normalize(root);
+        try {
+          if (Directory(normalized).existsSync()) paths.add(normalized);
+        } on Object {
+          // ignore
+        }
+      }
+    } else if (Platform.isWindows) {
       final systemDrive = Platform.environment['SystemDrive'];
       if (systemDrive != null && systemDrive.isNotEmpty) {
         final sysRoot = p.normalize('$systemDrive\\');

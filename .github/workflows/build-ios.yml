@@ -1,0 +1,47 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: build-ios
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/syncmate_ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # ios/ 由 flutter create 生成；已有文件不会被覆盖。
+      # 追加局域网权限描述（mDNS 组播 + HTTP 服务需要，iOS 14+）。
+      - name: 生成 iOS 平台工程
+        run: |
+          flutter create --platforms ios --org org.syncmate .
+          /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string 'SyncMate 需要访问局域网，以发现并连接同一网络下的其他设备'" ios/Runner/Info.plist
+          flutter pub get
+
+      - name: 静态分析
+        run: flutter analyze
+
+      - name: 单元测试
+        run: flutter test
+
+      - name: 编译 Release（不签名）
+        run: flutter build ios --release --no-codesign
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncmate-ios
+          path: apps/syncmate_ios/build/ios/iphoneos/Runner.app
+          if-no-files-found: error

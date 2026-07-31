@@ -7,6 +7,7 @@ import 'audit_log_page.dart';
 
 IconData _deviceIcon(String type) => switch (type) {
       'android' => Icons.phone_android,
+      'ios' => Icons.phone_iphone,
       'linux' => Icons.computer,
       'macos' => Icons.desktop_mac,
       _ => Icons.desktop_windows,
