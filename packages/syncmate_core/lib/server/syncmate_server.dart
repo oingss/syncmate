@@ -656,7 +656,8 @@ class SyncMateServer {
       var served = 0;
       var started = false;
       try {
-        await for (final chunk in _fs.readFile(path, offset: offset)) {
+        await for (final chunk
+            in _fs.readFile(path, offset: offset, maxBytes: end - offset + 1)) {
           response.add(chunk);
           started = true;
           served += chunk.length;

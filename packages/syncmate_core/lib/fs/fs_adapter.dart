@@ -32,7 +32,9 @@ abstract class FileSystemAdapter {
 
   Future<int> fileSize(String path);
 
-  Stream<List<int>> readFile(String path, {required int offset});
+  /// 流式读取文件。`maxBytes` 限制总产出字节数（Range 请求时避免超出
+  /// 声明的 contentLength 导致 dart:io 中断连接）。
+  Stream<List<int>> readFile(String path, {required int offset, int? maxBytes});
 
   Future<int> appendPart(String partPath, List<int> data);
 
@@ -190,7 +192,8 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
   }
 
   @override
-  Stream<List<int>> readFile(String path, {required int offset}) async* {
+  Stream<List<int>> readFile(String path,
+      {required int offset, int? maxBytes}) async* {
     final normalized = await normalizePath(path);
     final file = File(normalized);
     if (!await file.exists()) {
@@ -204,10 +207,18 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
       throw FsException(FsErrorKind.ioError, 'open failed: $e');
     }
     try {
+      var remaining = maxBytes;
       while (true) {
-        final chunk = await raf.read(64 * 1024);
+        final want = remaining == null || remaining > 64 * 1024
+            ? 64 * 1024
+            : remaining;
+        final chunk = await raf.read(want);
         if (chunk.isEmpty) break;
         yield chunk;
+        if (remaining != null) {
+          remaining -= chunk.length;
+          if (remaining <= 0) break;
+        }
       }
     } finally {
       await raf.close();
