@@ -1111,6 +1111,7 @@ Future<_EntryAction?> _showActionDialog(
   final name = entry.name;
   final isDir = entry.isDir;
   return showDialog<_EntryAction>(
+    context: context,
     builder: (dialogContext) => AlertDialog(
       title: Text(name, overflow: TextOverflow.ellipsis),
       contentPadding: const EdgeInsets.symmetric(vertical: 8),

@@ -1258,7 +1258,7 @@ Future<_EntryAction?> _showActionDialog(
           ),
           ListTile(
             dense: true,
-            leading: Icon(Icons.delete_outline, color: Colors.red),
+            leading: const Icon(Icons.delete_outline, color: Colors.red),
             title: Text(
               '删除',
               style: TextStyle(color: isDir ? Colors.red : null),
