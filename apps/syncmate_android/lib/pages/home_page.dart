@@ -221,14 +221,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return list;
   }
 
-  String _sourceLabel(_PaneSlot slot) {
-    if (slot.source == null) return '本机';
-    final device = _onlineDevice(slot.source!);
-    if (device != null) return device.alias;
-    final trusted = _trusted.where((t) => t.fingerprint == slot.source).firstOrNull;
-    return trusted?.alias ?? '离线设备';
-  }
-
   void _reloadPanes() {
     _paneAKey.currentState?.reload();
     _paneBKey.currentState?.reload();
