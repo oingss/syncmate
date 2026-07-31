@@ -103,7 +103,7 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
           // 光驱等不可访问设备，跳过
         }
       }
-    } else {
+    } else if (Platform.isAndroid) {
       const primary = '/storage/emulated/0';
       try {
         if (Directory(primary).existsSync()) paths.add(primary);
@@ -121,6 +121,24 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
         }
       } on Object {
         // ignore
+      }
+    } else {
+      // Linux / macOS 桌面端：优先 $HOME，缺失时退回根目录
+      final home = Platform.environment['HOME'];
+      if (home != null && home.isNotEmpty) {
+        final homeRoot = p.normalize(home);
+        try {
+          if (Directory(homeRoot).existsSync()) paths.add(homeRoot);
+        } on Object {
+          // ignore
+        }
+      }
+      if (paths.isEmpty) {
+        try {
+          if (Directory('/').existsSync()) paths.add('/');
+        } on Object {
+          // ignore
+        }
       }
     }
     _rootCache = List.of(paths);

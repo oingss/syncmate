@@ -1,0 +1,52 @@
+name: Build Linux
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: build-linux
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/syncmate_linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Linux 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # linux/ 由 flutter create 生成；已有文件（pubspec、lib、test、
+      # analysis_options）不会被覆盖，保持仓库版本。
+      - name: 生成 Linux 平台工程
+        run: |
+          flutter create --platforms linux --org org.syncmate .
+          flutter pub get
+
+      - name: 静态分析
+        run: flutter analyze
+
+      - name: 单元测试
+        run: flutter test
+
+      - name: 编译 Release
+        run: flutter build linux --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncmate-linux
+          path: apps/syncmate_linux/build/linux/x64/release/bundle/
+          if-no-files-found: error

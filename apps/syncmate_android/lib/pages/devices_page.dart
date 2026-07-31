@@ -5,6 +5,13 @@ import 'package:syncmate_core/syncmate_core.dart';
 
 import 'audit_log_page.dart';
 
+IconData _deviceIcon(String type) => switch (type) {
+      'android' => Icons.phone_android,
+      'linux' => Icons.computer,
+      'macos' => Icons.desktop_mac,
+      _ => Icons.desktop_windows,
+    };
+
 class DevicesPage extends StatefulWidget {
   const DevicesPage({
     super.key,
@@ -192,11 +199,7 @@ class _DevicesPageState extends State<DevicesPage> {
                 final online = _online.contains(device.fingerprint);
                 return Card(
                   child: ListTile(
-                    leading: Icon(
-                      device.deviceType == 'android'
-                          ? Icons.phone_android
-                          : Icons.desktop_windows,
-                    ),
+                    leading: Icon(_deviceIcon(device.deviceType)),
                     title: Row(
                       children: [
                         Flexible(
@@ -246,11 +249,7 @@ class _DevicesPageState extends State<DevicesPage> {
                 );
                 return Card(
                   child: ListTile(
-                    leading: Icon(
-                      device.deviceType == 'android'
-                          ? Icons.phone_android
-                          : Icons.desktop_windows,
-                    ),
+                    leading: Icon(_deviceIcon(device.deviceType)),
                     title: Text(device.alias),
                     subtitle: Text('${device.baseUrl}  ·  ${device.appVersion ?? ''}'),
                     trailing: trusted
