@@ -247,6 +247,83 @@ class SyncMateClient {
     }
   }
 
+  /// 读取远端文本文件内容（UTF-8；非文本文件抛 API 错误）。
+  Future<String> readContent(String path) async {
+    final encoded = base64Url.encode(utf8.encode(path));
+    final uri = Uri.parse('$baseUrl/api/files/content?path=$encoded');
+    final request = await _http.getUrl(uri).timeout(Constants.connectTimeout);
+    request.headers.set(_headerFingerprint, _fingerprint);
+    final response = await request.close().timeout(Constants.connectTimeout);
+    final text = await utf8.decoder.bind(response).join();
+    if (response.statusCode != HttpStatus.ok) {
+      throw _parseError(response.statusCode, text);
+    }
+    try {
+      final json = jsonDecode(text);
+      if (json is! Map<String, dynamic>) throw const FormatException();
+      final content = json['content'];
+      if (content is! String) throw const FormatException();
+      return content;
+    } on Object {
+      throw const ApiException(ApiErrorCode.badRequest, 'malformed response');
+    }
+  }
+
+  /// 覆写远端文本文件内容（UTF-8）。
+  Future<void> writeContent(String path, String content) async {
+    final uri = Uri.parse('$baseUrl/api/files/content');
+    final request = await _http.putUrl(uri).timeout(Constants.connectTimeout);
+    request.headers.set(_headerFingerprint, _fingerprint);
+    request.headers.contentType = ContentType.json;
+    request.write(jsonEncode({'path': path, 'content': content}));
+    final response = await request.close().timeout(Constants.connectTimeout);
+    final text = await utf8.decoder.bind(response).join();
+    if (response.statusCode != HttpStatus.ok) {
+      throw _parseError(response.statusCode, text);
+    }
+  }
+
+  /// 压缩远端文件/文件夹为 zip，返回实际压缩包路径。
+  Future<String> zip(String source, String archive) async {
+    final json = await _postJson('/api/files/zip', {
+      'source': source,
+      'archive': archive,
+    });
+    return json['path'] as String? ?? archive;
+  }
+
+  /// 解压远端 zip 到目标目录，返回实际解压目录路径。
+  Future<String> unzip(String archive, String target) async {
+    final json = await _postJson('/api/files/unzip', {
+      'archive': archive,
+      'target': target,
+    });
+    return json['path'] as String? ?? target;
+  }
+
+  Future<Map<String, dynamic>> _postJson(
+    String apiPath,
+    Map<String, dynamic> body,
+  ) async {
+    final uri = Uri.parse('$baseUrl$apiPath');
+    final request = await _http.postUrl(uri).timeout(Constants.connectTimeout);
+    request.headers.set(_headerFingerprint, _fingerprint);
+    request.headers.contentType = ContentType.json;
+    request.write(jsonEncode(body));
+    final response = await request.close().timeout(Constants.connectTimeout);
+    final text = await utf8.decoder.bind(response).join();
+    if (response.statusCode != HttpStatus.ok) {
+      throw _parseError(response.statusCode, text);
+    }
+    try {
+      final json = jsonDecode(text);
+      if (json is! Map<String, dynamic>) throw const FormatException();
+      return json;
+    } on Object {
+      throw const ApiException(ApiErrorCode.badRequest, 'malformed response');
+    }
+  }
+
   int? _parseContentRangeTotal(String? header) {
     if (header == null) return null;
     final match = RegExp(r'/(\d+)$').firstMatch(header);

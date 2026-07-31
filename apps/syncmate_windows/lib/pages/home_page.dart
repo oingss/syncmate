@@ -678,6 +678,16 @@ class _FilePaneState extends State<_FilePane> {
         widget.onTransferRequested(entry, fullPath, true);
       case _EntryAction.rename:
         await _renameEntry(entry);
+      case _EntryAction.edit:
+        await _editEntry(entry);
+      case _EntryAction.zip:
+        await _zipEntry(entry);
+      case _EntryAction.unzip:
+        await _unzipEntry(entry);
+      case _EntryAction.zipMove:
+        await _zipAndMove(entry);
+      case _EntryAction.unzipMove:
+        await _unzipAndMove(entry);
       case _EntryAction.delete:
         await _deleteEntry(entry);
     }
@@ -735,6 +745,191 @@ class _FilePaneState extends State<_FilePane> {
     return _client ??= SyncMateClient(
       baseUrl: device.baseUrl,
       fingerprint: widget.self.fingerprint,
+    );
+  }
+
+  /// 当前视图目录（根目录时取第一个存储根）。
+  String get _currentDir =>
+      _path ?? (_entries.isEmpty ? '' : _entries.first.name);
+
+  String _zipBaseName(FileEntry entry) {
+    final base =
+        entry.isDir ? entry.name : p.basenameWithoutExtension(entry.name);
+    return '$base.zip';
+  }
+
+  Future<String> _doZip(FileEntry entry) {
+    final archive = _join(_currentDir, _zipBaseName(entry));
+    final fullPath = _joinCurrent(entry.name);
+    if (_isRemote) return _clientFor().zip(fullPath, archive);
+    return _fs.zip(fullPath, archive);
+  }
+
+  Future<String> _doUnzip(FileEntry entry) {
+    final target = _join(_currentDir, p.basenameWithoutExtension(entry.name));
+    final fullPath = _joinCurrent(entry.name);
+    if (_isRemote) return _clientFor().unzip(fullPath, target);
+    return _fs.unzip(fullPath, target);
+  }
+
+  Future<void> _zipEntry(FileEntry entry) async {
+    try {
+      final result = await _doZip(entry);
+      _showMessage('已压缩为 ${p.basename(result)}');
+    } on FsException catch (e) {
+      _showMessage('压缩失败：${e.message}');
+      return;
+    } on ApiException catch (e) {
+      _showMessage('压缩失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('压缩失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _unzipEntry(FileEntry entry) async {
+    try {
+      final result = await _doUnzip(entry);
+      _showMessage('已解压到 ${p.basename(result)}');
+    } on FsException catch (e) {
+      _showMessage('解压失败：${e.message}');
+      return;
+    } on ApiException catch (e) {
+      _showMessage('解压失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('解压失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _zipAndMove(FileEntry entry) async {
+    final String result;
+    try {
+      result = await _doZip(entry);
+    } on FsException catch (e) {
+      _showMessage('压缩失败：${e.message}');
+      return;
+    } on ApiException catch (e) {
+      _showMessage('压缩失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('压缩失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+    widget.onTransferRequested(
+      FileEntry(name: p.basename(result), isDir: false, size: 0, modified: 0),
+      result,
+      true,
+    );
+  }
+
+  Future<void> _unzipAndMove(FileEntry entry) async {
+    final String result;
+    try {
+      result = await _doUnzip(entry);
+    } on FsException catch (e) {
+      _showMessage('解压失败：${e.message}');
+      return;
+    } on ApiException catch (e) {
+      _showMessage('解压失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('解压失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+    widget.onTransferRequested(
+      FileEntry(name: p.basename(result), isDir: true, size: 0, modified: 0),
+      result,
+      true,
+    );
+  }
+
+  Future<void> _editEntry(FileEntry entry) async {
+    if (entry.size > 512 * 1024) {
+      _showMessage('文件超过 512KB，暂不支持编辑');
+      return;
+    }
+    final fullPath = _joinCurrent(entry.name);
+    final String initial;
+    try {
+      initial = _isRemote
+          ? await _clientFor().readContent(fullPath)
+          : await _fs.readText(fullPath);
+    } on FsException catch (e) {
+      _showMessage('读取失败：${e.message}');
+      return;
+    } on ApiException catch (e) {
+      _showMessage('读取失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('读取失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    final edited = await _editDialog(entry.name, initial);
+    if (edited == null || !mounted) return;
+    try {
+      if (_isRemote) {
+        await _clientFor().writeContent(fullPath, edited);
+      } else {
+        await _fs.writeText(fullPath, edited);
+      }
+      _showMessage('已保存');
+    } on FsException catch (e) {
+      _showMessage('保存失败：${e.message}');
+      return;
+    } on ApiException catch (e) {
+      _showMessage('保存失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('保存失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<String?> _editDialog(String title, String initial) {
+    final controller = TextEditingController(text: initial);
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title, overflow: TextOverflow.ellipsis),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 320,
+          child: TextField(
+            controller: controller,
+            maxLines: null,
+            expands: true,
+            keyboardType: TextInputType.multiline,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              hintText: '文本内容（UTF-8）',
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -947,7 +1142,17 @@ class _FilePaneState extends State<_FilePane> {
   }
 }
 
-enum _EntryAction { copy, move, rename, delete }
+enum _EntryAction {
+  copy,
+  move,
+  rename,
+  edit,
+  zip,
+  unzip,
+  zipMove,
+  unzipMove,
+  delete,
+}
 
 Future<_EntryAction?> _showActionDialog(
   BuildContext context,
@@ -955,41 +1160,84 @@ Future<_EntryAction?> _showActionDialog(
 ) {
   final name = entry.name;
   final isDir = entry.isDir;
+  final isZip = name.toLowerCase().endsWith('.zip');
   return showDialog<_EntryAction>(
     context: context,
     builder: (dialogContext) => AlertDialog(
       title: Text(name, overflow: TextOverflow.ellipsis),
       contentPadding: const EdgeInsets.symmetric(vertical: 8),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.copy),
-            title: const Text('复制'),
-            subtitle: const Text('复制到另一视图的当前目录'),
-            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.copy),
-          ),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.drive_file_move_outline),
-            title: const Text('移动'),
-            subtitle: const Text('移动到另一视图的当前目录'),
-            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.move),
-          ),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.drive_file_rename_outline),
-            title: const Text('重命名'),
-            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.rename),
-          ),
-          ListTile(
-            dense: true,
-            leading: Icon(isDir ? Icons.folder_delete : Icons.delete_outline),
-            title: const Text('删除'),
-            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.delete),
-          ),
-        ],
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.copy),
+              title: const Text('复制'),
+              subtitle: const Text('复制到另一视图的当前目录'),
+              onTap: () => Navigator.of(dialogContext).pop(_EntryAction.copy),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.drive_file_move_outline),
+              title: const Text('移动'),
+              subtitle: const Text('移动到另一视图的当前目录'),
+              onTap: () => Navigator.of(dialogContext).pop(_EntryAction.move),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.drive_file_rename_outline),
+              title: const Text('重命名'),
+              onTap: () => Navigator.of(dialogContext).pop(_EntryAction.rename),
+            ),
+            if (!isDir)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('编辑'),
+                subtitle: const Text('编辑文本内容（UTF-8，≤512KB）'),
+                onTap: () => Navigator.of(dialogContext).pop(_EntryAction.edit),
+              ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.folder_zip),
+              title: const Text('压缩'),
+              subtitle: const Text('打包为 zip'),
+              onTap: () => Navigator.of(dialogContext).pop(_EntryAction.zip),
+            ),
+            if (isZip)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.unarchive),
+                title: const Text('解压'),
+                subtitle: const Text('解压到同名文件夹'),
+                onTap: () => Navigator.of(dialogContext).pop(_EntryAction.unzip),
+              ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.archive_outlined),
+              title: const Text('压缩并移动'),
+              subtitle: const Text('压缩后移动到另一视图的当前目录'),
+              onTap: () =>
+                  Navigator.of(dialogContext).pop(_EntryAction.zipMove),
+            ),
+            if (isZip)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.unarchive_outlined),
+                title: const Text('解压并移动'),
+                subtitle: const Text('解压后移动到另一视图的当前目录'),
+                onTap: () =>
+                    Navigator.of(dialogContext).pop(_EntryAction.unzipMove),
+              ),
+            ListTile(
+              dense: true,
+              leading: Icon(isDir ? Icons.folder_delete : Icons.delete_outline),
+              title: const Text('删除'),
+              onTap: () => Navigator.of(dialogContext).pop(_EntryAction.delete),
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(

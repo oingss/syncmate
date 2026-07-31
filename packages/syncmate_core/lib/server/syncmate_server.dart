@@ -171,6 +171,14 @@ class SyncMateServer {
         await _handleDelete(request);
       } else if (path == '/api/files/mkdir' && request.method == 'POST') {
         await _handleMkdir(request);
+      } else if (path == '/api/files/content' && request.method == 'GET') {
+        await _handleReadContent(request);
+      } else if (path == '/api/files/content' && request.method == 'PUT') {
+        await _handleWriteContent(request);
+      } else if (path == '/api/files/zip' && request.method == 'POST') {
+        await _handleZip(request);
+      } else if (path == '/api/files/unzip' && request.method == 'POST') {
+        await _handleUnzip(request);
       } else if (path == Constants.wsPath && request.method == 'GET') {
         await _handleClipboardWs(request);
       } else {
@@ -512,6 +520,169 @@ class SyncMateServer {
     try {
       final actual = await _fs.mkdir(path);
       _audit('mkdir', fingerprint, actual);
+      await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': actual});
+    } on FsException catch (e) {
+      await _writeFsError(request, e);
+    }
+  }
+
+  Future<void> _handleReadContent(HttpRequest request) async {
+    if (!await _isTrusted(request)) {
+      await _writeError(
+        request,
+        HttpStatus.forbidden,
+        ApiErrorCode.forbidden,
+        'not trusted',
+      );
+      return;
+    }
+    final path = await _pathFromQuery(request);
+    if (path == null) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'missing path parameter',
+      );
+      return;
+    }
+    final fingerprint = request.headers.value(_headerFingerprint)!;
+    try {
+      final content = await _fs.readText(path);
+      _audit('read', fingerprint, path);
+      await _writeJson(request, HttpStatus.ok, {
+        'ok': true,
+        'path': path,
+        'content': content,
+      });
+    } on FsException catch (e) {
+      await _writeFsError(request, e);
+    }
+  }
+
+  Future<void> _handleWriteContent(HttpRequest request) async {
+    if (!await _isTrusted(request)) {
+      await _writeError(
+        request,
+        HttpStatus.forbidden,
+        ApiErrorCode.forbidden,
+        'not trusted',
+      );
+      return;
+    }
+    final body = await _readJsonBody(request);
+    if (body == null) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'invalid json body',
+      );
+      return;
+    }
+    final path = body['path'];
+    final content = body['content'];
+    if (path is! String || path.isEmpty || content is! String) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'missing path/content',
+      );
+      return;
+    }
+    final fingerprint = request.headers.value(_headerFingerprint)!;
+    try {
+      await _fs.writeText(path, content);
+      _audit('write', fingerprint, path);
+      await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': path});
+    } on FsException catch (e) {
+      await _writeFsError(request, e);
+    }
+  }
+
+  Future<void> _handleZip(HttpRequest request) async {
+    if (!await _isTrusted(request)) {
+      await _writeError(
+        request,
+        HttpStatus.forbidden,
+        ApiErrorCode.forbidden,
+        'not trusted',
+      );
+      return;
+    }
+    final body = await _readJsonBody(request);
+    if (body == null) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'invalid json body',
+      );
+      return;
+    }
+    final source = body['source'];
+    final archive = body['archive'];
+    if (source is! String ||
+        source.isEmpty ||
+        archive is! String ||
+        archive.isEmpty) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'missing source/archive',
+      );
+      return;
+    }
+    final fingerprint = request.headers.value(_headerFingerprint)!;
+    try {
+      final actual = await _fs.zip(source, archive);
+      _audit('zip', fingerprint, source, extra: '-> $actual');
+      await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': actual});
+    } on FsException catch (e) {
+      await _writeFsError(request, e);
+    }
+  }
+
+  Future<void> _handleUnzip(HttpRequest request) async {
+    if (!await _isTrusted(request)) {
+      await _writeError(
+        request,
+        HttpStatus.forbidden,
+        ApiErrorCode.forbidden,
+        'not trusted',
+      );
+      return;
+    }
+    final body = await _readJsonBody(request);
+    if (body == null) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'invalid json body',
+      );
+      return;
+    }
+    final archive = body['archive'];
+    final target = body['target'];
+    if (archive is! String ||
+        archive.isEmpty ||
+        target is! String ||
+        target.isEmpty) {
+      await _writeError(
+        request,
+        HttpStatus.badRequest,
+        ApiErrorCode.badRequest,
+        'missing archive/target',
+      );
+      return;
+    }
+    final fingerprint = request.headers.value(_headerFingerprint)!;
+    try {
+      final actual = await _fs.unzip(archive, target);
+      _audit('unzip', fingerprint, archive, extra: '-> $actual');
       await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': actual});
     } on FsException catch (e) {
       await _writeFsError(request, e);

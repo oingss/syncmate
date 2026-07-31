@@ -5,8 +5,10 @@
 /// 仅允许访问存储根以内的路径，越界抛 [FsException(invalidPath)]。
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
 
 import '../model/file_entry.dart';
@@ -57,6 +59,20 @@ abstract class FileSystemAdapter {
 
   /// 新建目录；已存在抛 [FsException(conflict)]。
   Future<String> mkdir(String path);
+
+  /// 读取文本文件（UTF-8）；非文本或超过 1MB 抛 [FsException(badRequest)]。
+  Future<String> readText(String path);
+
+  /// 以 UTF-8 覆写文本文件。
+  Future<void> writeText(String path, String content);
+
+  /// 将文件/文件夹（含子目录）压缩为 zip；目标已存在时自动重命名，
+  /// 返回实际压缩包路径。
+  Future<String> zip(String sourcePath, String archivePath);
+
+  /// 解压 zip 到目标目录（自动创建，已存在时自动重命名），
+  /// 返回实际解压目录路径。
+  Future<String> unzip(String archivePath, String targetDir);
 }
 
 class LocalFileSystemAdapter implements FileSystemAdapter {
@@ -412,5 +428,112 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
       throw FsException(FsErrorKind.ioError, e.toString());
     }
     return normalized;
+  }
+
+  @override
+  Future<String> readText(String path) async {
+    final normalized = await normalizePath(path);
+    final file = File(normalized);
+    if (!await file.exists()) {
+      throw FsException(FsErrorKind.notFound, 'path not found: $path');
+    }
+    try {
+      final length = await file.length();
+      if (length > 1024 * 1024) {
+        throw const FsException(FsErrorKind.badRequest, 'file too large to edit');
+      }
+      final bytes = await file.readAsBytes();
+      try {
+        return utf8.decode(bytes, allowMalformed: false);
+      } on FormatException {
+        throw const FsException(FsErrorKind.badRequest, 'not a utf-8 text file');
+      }
+    } on FsException {
+      rethrow;
+    } on Object catch (e) {
+      throw FsException(FsErrorKind.ioError, e.toString());
+    }
+  }
+
+  @override
+  Future<void> writeText(String path, String content) async {
+    final normalized = await normalizePath(path);
+    try {
+      await File(normalized).writeAsString(content, flush: true);
+    } on Object catch (e) {
+      throw FsException(FsErrorKind.ioError, e.toString());
+    }
+  }
+
+  @override
+  Future<String> zip(String sourcePath, String archivePath) async {
+    final src = await normalizePath(sourcePath);
+    final dst = await uniquePath(await normalizePath(archivePath));
+    final type = await FileSystemEntity.type(src);
+    if (type == FileSystemEntityType.notFound) {
+      throw FsException(FsErrorKind.notFound, 'path not found: $sourcePath');
+    }
+    try {
+      final encoder = ZipFileEncoder();
+      encoder.create(dst);
+      if (type == FileSystemEntityType.directory) {
+        // 不带目录名作根：解压到同名文件夹后内容直接落位（往返一致）
+        await encoder.addDirectory(Directory(src), includeDirName: false);
+      } else {
+        await encoder.addFile(File(src));
+      }
+      await encoder.close();
+    } on FsException {
+      rethrow;
+    } on Object catch (e) {
+      throw FsException(FsErrorKind.ioError, e.toString());
+    }
+    return dst;
+  }
+
+  @override
+  Future<String> unzip(String archivePath, String targetDir) async {
+    final src = await normalizePath(archivePath);
+    final base = await uniquePath(await normalizePath(targetDir));
+    final file = File(src);
+    if (!await file.exists()) {
+      throw FsException(FsErrorKind.notFound, 'path not found: $archivePath');
+    }
+    try {
+      final bytes = await file.readAsBytes();
+      final validMagic = bytes.length >= 4 &&
+          bytes[0] == 0x50 &&
+          bytes[1] == 0x4B &&
+          bytes[2] == 0x03 &&
+          bytes[3] == 0x04;
+      if (!validMagic) {
+        throw const FsException(FsErrorKind.badRequest, 'invalid zip archive');
+      }
+      final Archive archive;
+      try {
+        archive = ZipDecoder().decodeBytes(bytes);
+      } on Object {
+        throw const FsException(FsErrorKind.badRequest, 'invalid zip archive');
+      }
+      if (archive.files.isEmpty) {
+        throw const FsException(FsErrorKind.badRequest, 'empty zip archive');
+      }
+      await Directory(base).create(recursive: true);
+      final separator = Platform.isWindows ? p.separator : '/';
+      for (final entry in archive.files) {
+        if (!entry.isFile) continue;
+        final target = p.normalize(p.join(base, entry.name));
+        // 防 zip-slip：条目路径必须落在目标目录内
+        if (!target.startsWith('$base$separator')) continue;
+        final out = File(target);
+        await out.create(recursive: true);
+        await out.writeAsBytes(entry.content);
+      }
+    } on FsException {
+      rethrow;
+    } on Object catch (e) {
+      throw FsException(FsErrorKind.ioError, e.toString());
+    }
+    return base;
   }
 }
