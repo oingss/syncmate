@@ -196,9 +196,14 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
     if (!await file.exists()) {
       throw FsException(FsErrorKind.notFound, 'path not found: $path');
     }
-    final raf = await file.open();
+    final RandomAccessFile raf;
     try {
+      raf = await file.open();
       await raf.setPosition(offset);
+    } on Object catch (e) {
+      throw FsException(FsErrorKind.ioError, 'open failed: $e');
+    }
+    try {
       while (true) {
         final chunk = await raf.read(64 * 1024);
         if (chunk.isEmpty) break;

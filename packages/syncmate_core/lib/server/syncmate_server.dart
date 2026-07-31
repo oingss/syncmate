@@ -653,17 +653,28 @@ class SyncMateServer {
         await response.close();
         return;
       }
+      var served = 0;
+      var started = false;
       try {
-        var served = 0;
         await for (final chunk in _fs.readFile(path, offset: offset)) {
           response.add(chunk);
+          started = true;
           served += chunk.length;
           if (served >= end - offset + 1) break;
+        }
+      } on FsException catch (e) {
+        if (!started) {
+          await _writeFsError(request, e);
+          return;
         }
       } on Object {
         // 客户端断开等场景，忽略写错误
       }
-      await response.close();
+      try {
+        await response.close();
+      } on Object {
+        // ignore
+      }
     } on FsException catch (e) {
       await _writeFsError(request, e);
     }

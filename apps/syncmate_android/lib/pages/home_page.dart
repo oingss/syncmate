@@ -8,13 +8,6 @@ import '../platform/storage_permission.dart';
 import '../platform/system_clipboard_backend.dart';
 import 'devices_page.dart';
 
-class _Selection {
-  _Selection(this.fullPath, this.entry);
-
-  final String fullPath;
-  final FileEntry entry;
-}
-
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
@@ -53,8 +46,6 @@ class _HomePageState extends State<HomePage>
   bool _clipboardEnabled = false;
   String? _remotePanePath;
   String? _localPanePath;
-  _Selection? _remoteSelected;
-  _Selection? _localSelected;
   List<TransferTask> _transferTasks = [];
 
   @override
@@ -231,72 +222,80 @@ class _HomePageState extends State<HomePage>
     setState(() => _localPanePath = path);
   }
 
-  void _onRemoteSelection(FileEntry? entry, String fullPath) {
-    setState(() {
-      if (entry == null) {
-        _remoteSelected = null;
-      } else {
-        _remoteSelected = _Selection(fullPath, entry);
-        _localSelected = null;
-      }
-    });
-  }
-
-  void _onLocalSelection(FileEntry? entry, String fullPath) {
-    setState(() {
-      if (entry == null) {
-        _localSelected = null;
-      } else {
-        _localSelected = _Selection(fullPath, entry);
-        _remoteSelected = null;
-      }
-    });
-  }
-
-  bool get _canCopy {
-    if (_remoteSelected != null && _localPanePath != null) return true;
-    if (_localSelected != null && _remotePanePath != null) return true;
-    return false;
-  }
-
-  Future<void> _copySelection() async {
+  DiscoveredDevice? _currentDevice() {
     final tabIndex = _tabController?.index ?? 0;
-    if (_trusted.isEmpty || tabIndex >= _trusted.length) return;
-    final device = _onlineDevice(_trusted[tabIndex].fingerprint);
+    if (_trusted.isEmpty || tabIndex >= _trusted.length) return null;
+    return _onlineDevice(_trusted[tabIndex].fingerprint);
+  }
+
+  /// 对方设备 → 本机（复制对方文件/文件夹到本机当前目录）。
+  Future<void> _copyFromRemote(FileEntry entry, String fullPath) async {
+    final device = _currentDevice();
     if (device == null) {
       _showMessage('对方设备离线');
       return;
     }
-    final remoteContext = device.deviceType == 'windows' ? p.windows : p.posix;
+    final target = _localPanePath;
+    if (target == null) {
+      _showMessage('请先在本机侧进入目标文件夹');
+      return;
+    }
     try {
-      if (_remoteSelected != null) {
-        final target = p.join(_localPanePath!, _remoteSelected!.entry.name);
-        await _transfers.copy(
+      if (entry.isDir) {
+        await _transfers.copyDirectory(
           device: device,
-          remotePath: _remoteSelected!.fullPath,
-          localPath: target,
+          remotePath: fullPath,
+          localPath: p.join(target, entry.name),
           toRemote: false,
         );
-      } else if (_localSelected != null) {
-        final target = remoteContext.join(
-          _remotePanePath!,
-          _localSelected!.entry.name,
-        );
+      } else {
         await _transfers.copy(
           device: device,
-          remotePath: target,
-          localPath: _localSelected!.fullPath,
+          remotePath: fullPath,
+          localPath: p.join(target, entry.name),
+          toRemote: false,
+        );
+      }
+      _showMessage('已开始从对方设备复制到本机');
+    } on Object catch (e) {
+      _showMessage('复制失败：$e');
+    }
+  }
+
+  /// 本机 → 对方设备（复制本机文件/文件夹到对方当前目录）。
+  Future<void> _copyFromLocal(FileEntry entry, String fullPath) async {
+    final device = _currentDevice();
+    if (device == null) {
+      _showMessage('对方设备离线');
+      return;
+    }
+    final target = _remotePanePath;
+    if (target == null) {
+      _showMessage('请先进入对方设备的目标文件夹');
+      return;
+    }
+    try {
+      final remoteContext = device.deviceType == 'windows' ? p.windows : p.posix;
+      final remoteTarget = remoteContext.join(target, entry.name);
+      if (entry.isDir) {
+        await _transfers.copyDirectory(
+          device: device,
+          remotePath: remoteTarget,
+          localPath: fullPath,
+          toRemote: true,
+        );
+      } else {
+        await _transfers.copy(
+          device: device,
+          remotePath: remoteTarget,
+          localPath: fullPath,
           toRemote: true,
         );
       }
+      _showMessage('已开始复制到对方设备');
     } on Object catch (e) {
       _showMessage('复制失败：$e');
-      return;
     }
-    setState(() {
-      _remoteSelected = null;
-      _localSelected = null;
-    });
   }
 
   void _showMessage(String message) {
@@ -415,53 +414,21 @@ class _HomePageState extends State<HomePage>
                   self: widget.self,
                   device: remoteDevice,
                   onPathChanged: _onRemotePathChanged,
-                  onSelectionChanged: _onRemoteSelection,
+                  onCopyRequested: _copyFromRemote,
                 ),
               ),
               const SizedBox(width: 4),
               Expanded(
                 child: _LocalPane(
                   onPathChanged: _onLocalPathChanged,
-                  onSelectionChanged: _onLocalSelection,
+                  onCopyRequested: _copyFromLocal,
                 ),
               ),
             ],
           ),
         ),
-        _buildOperationBar(context),
         _buildTransferPanel(context),
       ],
-    );
-  }
-
-  Widget _buildOperationBar(BuildContext context) {
-    final _Selection? selection = _remoteSelected ?? _localSelected;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-      child: Row(
-        children: [
-          if (selection != null)
-            Expanded(
-              child: Text(
-                '已选：${selection.entry.name}',
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            )
-          else
-            Expanded(
-              child: Text(
-                '选择文件后可复制到对侧',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-          FilledButton.icon(
-            onPressed: _canCopy ? _copySelection : null,
-            icon: const Icon(Icons.copy, size: 18),
-            label: const Text('复制到对面'),
-          ),
-        ],
-      ),
     );
   }
 
@@ -549,13 +516,13 @@ class _RemotePane extends StatefulWidget {
     required this.self,
     required this.device,
     required this.onPathChanged,
-    required this.onSelectionChanged,
+    required this.onCopyRequested,
   });
 
   final DeviceProfile self;
   final DiscoveredDevice? device;
   final ValueChanged<String?> onPathChanged;
-  final void Function(FileEntry? entry, String fullPath) onSelectionChanged;
+  final void Function(FileEntry entry, String fullPath) onCopyRequested;
 
   @override
   State<_RemotePane> createState() => _RemotePaneState();
@@ -566,7 +533,6 @@ class _RemotePaneState extends State<_RemotePane> {
   List<FileEntry> _entries = [];
   bool _loading = true;
   String? _error;
-  FileEntry? _selection;
   SyncMateClient? _client;
   late final p.Context _remotePath;
 
@@ -625,11 +591,7 @@ class _RemotePaneState extends State<_RemotePane> {
   }
 
   void _enter(FileEntry entry) {
-    setState(() {
-      _selection = null;
-      _path = _remotePath.join(_path ?? '', entry.name);
-    });
-    widget.onSelectionChanged(null, '');
+    setState(() => _path = _remotePath.join(_path ?? '', entry.name));
     _load();
   }
 
@@ -638,34 +600,141 @@ class _RemotePaneState extends State<_RemotePane> {
       _enter(entry);
       return;
     }
-    setState(() => _selection = _selection == entry ? null : entry);
-    if (_selection == entry) {
-      widget.onSelectionChanged(
-        entry,
-        _remotePath.join(_path ?? '', entry.name),
-      );
-    } else {
-      widget.onSelectionChanged(null, '');
+    _showEntryActions(entry);
+  }
+
+  Future<void> _showEntryActions(FileEntry entry) async {
+    final action = await _showActionDialog(
+      context,
+      entry,
+      copyLabel: '复制到本机',
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _EntryAction.copy:
+        widget.onCopyRequested(
+          entry,
+          _remotePath.join(_path ?? '', entry.name),
+        );
+      case _EntryAction.rename:
+        await _renameEntry(entry);
+      case _EntryAction.move:
+        await _moveEntry(entry);
+      case _EntryAction.delete:
+        await _deleteEntry(entry);
     }
   }
 
   void _goUp() {
     if (_path == null) return;
     final parent = _remotePath.dirname(_path!);
-    setState(() {
-      _selection = null;
-      _path = parent == _path ? null : parent;
-    });
-    widget.onSelectionChanged(null, '');
+    setState(() => _path = parent == _path ? null : parent);
     _load();
   }
 
   void _goRoot() {
-    setState(() {
-      _selection = null;
-      _path = null;
-    });
-    widget.onSelectionChanged(null, '');
+    setState(() => _path = null);
+    _load();
+  }
+
+  String get _basePath {
+    if (_path != null) return _path!;
+    return _entries.isEmpty ? '' : _entries.first.name;
+  }
+
+  SyncMateClient? _clientFor() {
+    return _client ??=
+        (widget.device == null
+            ? null
+            : SyncMateClient(
+                baseUrl: widget.device!.baseUrl,
+                fingerprint: widget.self.fingerprint,
+              ));
+  }
+
+  Future<void> _handleMkdir() async {
+    final client = _clientFor();
+    if (client == null) {
+      _showMessage('对方设备离线');
+      return;
+    }
+    try {
+      final name = await _promptText('新建文件夹', '文件夹名称', '新建文件夹');
+      if (name == null || name.isEmpty) return;
+      await client.mkdir(_remotePath.join(_basePath, name));
+      _showMessage('已创建 $name');
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _renameEntry(FileEntry entry) async {
+    final client = _clientFor();
+    if (client == null) {
+      _showMessage('对方设备离线');
+      return;
+    }
+    final from = _remotePath.join(_path ?? '', entry.name);
+    try {
+      final name = await _promptText('重命名', '新名称', entry.name);
+      if (name == null || name.isEmpty) return;
+      await client.move(
+        from,
+        _remotePath.join(_remotePath.dirname(from), name),
+      );
+      _showMessage('已重命名');
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _moveEntry(FileEntry entry) async {
+    final client = _clientFor();
+    if (client == null) {
+      _showMessage('对方设备离线');
+      return;
+    }
+    final from = _remotePath.join(_path ?? '', entry.name);
+    try {
+      final target = await _promptText(
+        '移动',
+        '目标完整路径',
+        _remotePath.join(_remotePath.dirname(from), entry.name),
+      );
+      if (target == null || target.isEmpty) return;
+      final actual = await client.move(from, target);
+      _showMessage('已移动至 $actual');
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _deleteEntry(FileEntry entry) async {
+    final client = _clientFor();
+    if (client == null) {
+      _showMessage('对方设备离线');
+      return;
+    }
+    final from = _remotePath.join(_path ?? '', entry.name);
+    final confirmed = await _confirmDelete(entry.name);
+    if (!confirmed) return;
+    try {
+      await client.delete(from, recursive: true);
+      _showMessage('已删除 ${entry.name}');
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
     _load();
   }
 
@@ -707,68 +776,17 @@ class _RemotePaneState extends State<_RemotePane> {
           onSelected: (action) => _handleAction(action),
           itemBuilder: (context) => [
             const PopupMenuItem(value: 'mkdir', child: Text('新建文件夹')),
-            if (_selection != null) ...[
-              const PopupMenuItem(value: 'move', child: Text('重命名 / 移动')),
-              const PopupMenuItem(value: 'delete', child: Text('删除')),
-            ],
           ],
         ),
       ],
     );
   }
 
-  String get _basePath {
-    if (_path != null) return _path!;
-    return _entries.isEmpty ? '' : _entries.first.name;
-  }
-
-  String get _selectionPath =>
-      _remotePath.join(_basePath, _selection!.name);
-
   Future<void> _handleAction(String action) async {
-    final client = _client ??=
-        (widget.device == null
-            ? null
-            : SyncMateClient(
-                baseUrl: widget.device!.baseUrl,
-                fingerprint: widget.self.fingerprint,
-              ));
-    if (client == null) {
-      _showMessage('对方设备离线');
-      return;
+    switch (action) {
+      case 'mkdir':
+        await _handleMkdir();
     }
-    try {
-      switch (action) {
-        case 'mkdir':
-          final name = await _promptText('新建文件夹', '文件夹名称', '新建文件夹');
-          if (name == null || name.isEmpty) return;
-          await client.mkdir(_remotePath.join(_basePath, name));
-          _showMessage('已创建 $name');
-        case 'move':
-          final from = _selectionPath;
-          final target = await _promptText(
-            '重命名 / 移动',
-            '目标完整路径',
-            _remotePath.join(_remotePath.dirname(from), _selection!.name),
-          );
-          if (target == null || target.isEmpty) return;
-          final actual = await client.move(from, target);
-          _showMessage('已移动至 $actual');
-        case 'delete':
-          final name = _selection!.name;
-          final confirmed = await _confirmDelete(name);
-          if (!confirmed) return;
-          await client.delete(_selectionPath, recursive: true);
-          _showMessage('已删除 $name');
-      }
-    } on Object catch (e) {
-      _showMessage('操作失败：$e');
-      return;
-    }
-    if (!mounted) return;
-    setState(() => _selection = null);
-    widget.onSelectionChanged(null, '');
-    _load();
   }
 
   Future<String?> _promptText(String title, String label, String initial) {
@@ -851,26 +869,26 @@ class _RemotePaneState extends State<_RemotePane> {
   }
 
   Widget _buildTile(BuildContext context, FileEntry entry) {
-    final selected = _selection == entry;
-    return ListTile(
-      dense: true,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-      selected: selected,
-      selectedTileColor: Theme.of(context).colorScheme.primaryContainer,
-      leading: Icon(_iconFor(entry), size: 20),
-      title: Text(
-        entry.name,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 13),
+    return GestureDetector(
+      onLongPress: () => _showEntryActions(entry),
+      onSecondaryTap: () => _showEntryActions(entry),
+      child: ListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+        leading: Icon(_iconFor(entry), size: 20),
+        title: Text(
+          entry.name,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 13),
+        ),
+        subtitle: entry.isDir
+            ? null
+            : Text(
+                '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
+                style: const TextStyle(fontSize: 11),
+              ),
+        onTap: () => _select(entry),
       ),
-      subtitle: entry.isDir
-          ? null
-          : Text(
-              '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
-              style: const TextStyle(fontSize: 11),
-            ),
-      trailing: selected ? const Icon(Icons.check_circle, size: 18) : null,
-      onTap: () => _select(entry),
     );
   }
 }
@@ -878,11 +896,11 @@ class _RemotePaneState extends State<_RemotePane> {
 class _LocalPane extends StatefulWidget {
   const _LocalPane({
     required this.onPathChanged,
-    required this.onSelectionChanged,
+    required this.onCopyRequested,
   });
 
   final ValueChanged<String?> onPathChanged;
-  final void Function(FileEntry? entry, String fullPath) onSelectionChanged;
+  final void Function(FileEntry entry, String fullPath) onCopyRequested;
 
   @override
   State<_LocalPane> createState() => _LocalPaneState();
@@ -894,7 +912,6 @@ class _LocalPaneState extends State<_LocalPane> {
   List<FileEntry> _entries = [];
   bool _loading = true;
   String? _error;
-  FileEntry? _selection;
 
   @override
   void initState() {
@@ -934,11 +951,7 @@ class _LocalPaneState extends State<_LocalPane> {
   }
 
   void _enter(FileEntry entry) {
-    setState(() {
-      _selection = null;
-      _path = p.join(_path ?? '', entry.name);
-    });
-    widget.onSelectionChanged(null, '');
+    setState(() => _path = p.join(_path ?? '', entry.name));
     _load();
   }
 
@@ -947,31 +960,117 @@ class _LocalPaneState extends State<_LocalPane> {
       _enter(entry);
       return;
     }
-    setState(() => _selection = _selection == entry ? null : entry);
-    if (_selection == entry) {
-      widget.onSelectionChanged(entry, p.join(_path ?? '', entry.name));
-    } else {
-      widget.onSelectionChanged(null, '');
+    _showEntryActions(entry);
+  }
+
+  Future<void> _showEntryActions(FileEntry entry) async {
+    final action = await _showActionDialog(
+      context,
+      entry,
+      copyLabel: '复制到对方设备',
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _EntryAction.copy:
+        widget.onCopyRequested(entry, p.join(_path ?? '', entry.name));
+      case _EntryAction.rename:
+        await _renameEntry(entry);
+      case _EntryAction.move:
+        await _moveEntry(entry);
+      case _EntryAction.delete:
+        await _deleteEntry(entry);
     }
   }
 
   void _goUp() {
     if (_path == null) return;
     final parent = p.dirname(_path!);
-    setState(() {
-      _selection = null;
-      _path = parent == _path ? null : parent;
-    });
-    widget.onSelectionChanged(null, '');
+    setState(() => _path = parent == _path ? null : parent);
     _load();
   }
 
   void _goRoot() {
-    setState(() {
-      _selection = null;
-      _path = null;
-    });
-    widget.onSelectionChanged(null, '');
+    setState(() => _path = null);
+    _load();
+  }
+
+  String get _basePath {
+    if (_path != null) return _path!;
+    return _entries.isEmpty ? '' : _entries.first.name;
+  }
+
+  Future<void> _handleMkdir() async {
+    try {
+      final name = await _promptText('新建文件夹', '文件夹名称', '新建文件夹');
+      if (name == null || name.isEmpty) return;
+      await _fs.mkdir(p.join(_basePath, name));
+      _showMessage('已创建 $name');
+    } on FsException catch (e) {
+      _showMessage('操作失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _renameEntry(FileEntry entry) async {
+    final from = p.join(_path ?? '', entry.name);
+    try {
+      final name = await _promptText('重命名', '新名称', entry.name);
+      if (name == null || name.isEmpty) return;
+      await _fs.move(from, p.join(p.dirname(from), name));
+      _showMessage('已重命名');
+    } on FsException catch (e) {
+      _showMessage('操作失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _moveEntry(FileEntry entry) async {
+    final from = p.join(_path ?? '', entry.name);
+    try {
+      final target = await _promptText(
+        '移动',
+        '目标完整路径',
+        p.join(p.dirname(from), entry.name),
+      );
+      if (target == null || target.isEmpty) return;
+      final actual = await _fs.move(from, target);
+      _showMessage('已移动至 $actual');
+    } on FsException catch (e) {
+      _showMessage('操作失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _load();
+  }
+
+  Future<void> _deleteEntry(FileEntry entry) async {
+    final from = p.join(_path ?? '', entry.name);
+    final confirmed = await _confirmDelete(entry.name);
+    if (!confirmed) return;
+    try {
+      await _fs.delete(from, recursive: true);
+      _showMessage('已删除 ${entry.name}');
+    } on FsException catch (e) {
+      _showMessage('操作失败：${e.message}');
+      return;
+    } on Object catch (e) {
+      _showMessage('操作失败：$e');
+      return;
+    }
+    if (!mounted) return;
     _load();
   }
 
@@ -1007,10 +1106,6 @@ class _LocalPaneState extends State<_LocalPane> {
             onSelected: (action) => _handleAction(action),
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'mkdir', child: Text('新建文件夹')),
-              if (_selection != null) ...[
-                const PopupMenuItem(value: 'move', child: Text('重命名 / 移动')),
-                const PopupMenuItem(value: 'delete', child: Text('删除')),
-              ],
             ],
           ),
         ],
@@ -1019,49 +1114,11 @@ class _LocalPaneState extends State<_LocalPane> {
     );
   }
 
-  String get _basePath {
-    if (_path != null) return _path!;
-    return _entries.isEmpty ? '' : _entries.first.name;
-  }
-
-  String get _selectionPath => p.join(_basePath, _selection!.name);
-
   Future<void> _handleAction(String action) async {
-    try {
-      switch (action) {
-        case 'mkdir':
-          final name = await _promptText('新建文件夹', '文件夹名称', '新建文件夹');
-          if (name == null || name.isEmpty) return;
-          await _fs.mkdir(p.join(_basePath, name));
-          _showMessage('已创建 $name');
-        case 'move':
-          final from = _selectionPath;
-          final target = await _promptText(
-            '重命名 / 移动',
-            '目标完整路径',
-            p.join(p.dirname(from), _selection!.name),
-          );
-          if (target == null || target.isEmpty) return;
-          final actual = await _fs.move(from, target);
-          _showMessage('已移动至 $actual');
-        case 'delete':
-          final name = _selection!.name;
-          final confirmed = await _confirmDelete(name);
-          if (!confirmed) return;
-          await _fs.delete(_selectionPath, recursive: true);
-          _showMessage('已删除 $name');
-      }
-    } on FsException catch (e) {
-      _showMessage('操作失败：${e.message}');
-      return;
-    } on Object catch (e) {
-      _showMessage('操作失败：$e');
-      return;
+    switch (action) {
+      case 'mkdir':
+        await _handleMkdir();
     }
-    if (!mounted) return;
-    setState(() => _selection = null);
-    widget.onSelectionChanged(null, '');
-    _load();
   }
 
   Future<String?> _promptText(String title, String label, String initial) {
@@ -1138,30 +1195,86 @@ class _LocalPaneState extends State<_LocalPane> {
       itemCount: _entries.length,
       itemBuilder: (context, index) {
         final entry = _entries[index];
-        final selected = _selection == entry;
-        return ListTile(
-          dense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-          selected: selected,
-          selectedTileColor: Theme.of(context).colorScheme.primaryContainer,
-          leading: Icon(_iconFor(entry), size: 20),
-          title: Text(
-            entry.name,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13),
+        return GestureDetector(
+          onLongPress: () => _showEntryActions(entry),
+          onSecondaryTap: () => _showEntryActions(entry),
+          child: ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+            leading: Icon(_iconFor(entry), size: 20),
+            title: Text(
+              entry.name,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+            subtitle: entry.isDir
+                ? null
+                : Text(
+                    '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+            onTap: () => _select(entry),
           ),
-          subtitle: entry.isDir
-              ? null
-              : Text(
-                  '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
-                  style: const TextStyle(fontSize: 11),
-                ),
-          trailing: selected ? const Icon(Icons.check_circle, size: 18) : null,
-          onTap: () => _select(entry),
         );
       },
     );
   }
+}
+
+enum _EntryAction { copy, rename, move, delete }
+
+Future<_EntryAction?> _showActionDialog(
+  BuildContext context,
+  FileEntry entry, {
+  required String copyLabel,
+}) {
+  final name = entry.name;
+  final isDir = entry.isDir;
+  return showDialog<_EntryAction>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(name, overflow: TextOverflow.ellipsis),
+      contentPadding: const EdgeInsets.symmetric(vertical: 8),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.copy),
+            title: Text(copyLabel),
+            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.copy),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.drive_file_rename_outline),
+            title: const Text('重命名'),
+            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.rename),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.drive_file_move_outline),
+            title: const Text('移动'),
+            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.move),
+          ),
+          ListTile(
+            dense: true,
+            leading: Icon(Icons.delete_outline, color: Colors.red),
+            title: Text(
+              '删除',
+              style: TextStyle(color: isDir ? Colors.red : null),
+            ),
+            onTap: () => Navigator.of(dialogContext).pop(_EntryAction.delete),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    ),
+  );
 }
 
 Widget _buildPane(

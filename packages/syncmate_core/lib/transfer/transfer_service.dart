@@ -1,8 +1,9 @@
 /// 传输任务编排：复制（上传/下载）、进度事件、速度统计、取消、断点续传。
 ///
-/// 下载：本机已存在同名文件且大小>0 时从该大小续传（先查远端总大小，
+/// 单文件下载：本机已存在同名文件且大小>0 时从该大小续传（先查远端总大小，
 /// 已完整则直接完成）；大小 0 视为新文件，自动重命名目标。
-/// 上传：先查服务端分片进度，从该 offset 续传；取消时清理服务端 .sm-part。
+/// 单文件上传：先查服务端分片进度，从该 offset 续传；取消时清理服务端 .sm-part。
+/// 目录复制：递归收集文件清单与总大小后逐个传输，先建目录再传文件。
 library;
 
 import 'dart:async';
@@ -28,12 +29,14 @@ class TransferTask {
     required this.remotePath,
     required this.localPath,
     required this.toRemote,
+    this.isDirectory = false,
   });
 
   final String id;
   final String remotePath;
   String localPath;
   final bool toRemote;
+  final bool isDirectory;
   final TransferCancel cancelToken = TransferCancel();
 
   int total = 0;
@@ -65,6 +68,8 @@ class TaskFinished extends TransferEvent {
   final TransferTask task;
 }
 
+typedef _RemoteFileEntry = ({String remote, String local, int size});
+
 class TransferService {
   TransferService({required this.self});
 
@@ -86,12 +91,44 @@ class TransferService {
     required String remotePath,
     required String localPath,
     required bool toRemote,
+  }) {
+    return _add(
+      device: device,
+      remotePath: remotePath,
+      localPath: localPath,
+      toRemote: toRemote,
+    );
+  }
+
+  /// 目录整体复制：递归传输目录内全部文件。
+  Future<TransferTask> copyDirectory({
+    required DiscoveredDevice device,
+    required String remotePath,
+    required String localPath,
+    required bool toRemote,
+  }) {
+    return _add(
+      device: device,
+      remotePath: remotePath,
+      localPath: localPath,
+      toRemote: toRemote,
+      isDirectory: true,
+    );
+  }
+
+  Future<TransferTask> _add({
+    required DiscoveredDevice device,
+    required String remotePath,
+    required String localPath,
+    required bool toRemote,
+    bool isDirectory = false,
   }) async {
     final task = TransferTask(
       id: 't${_nextId++}',
       remotePath: remotePath,
       localPath: localPath,
       toRemote: toRemote,
+      isDirectory: isDirectory,
     );
     _tasks[task.id] = task;
     _events.add(TaskAdded(task));
@@ -118,7 +155,13 @@ class TransferService {
     );
     final meter = _SpeedMeter();
     try {
-      if (task.toRemote) {
+      if (task.isDirectory) {
+        if (task.toRemote) {
+          await _runDirUpload(task, client, meter);
+        } else {
+          await _runDirDownload(task, client, meter);
+        }
+      } else if (task.toRemote) {
         await _runUpload(task, client, meter);
       } else {
         await _runDownload(task, client, meter);
@@ -128,7 +171,7 @@ class TransferService {
     } on _Cancelled {
       task.status = TransferStatus.cancelled;
       task.speed = 0;
-      if (task.toRemote) {
+      if (task.toRemote && !task.isDirectory) {
         try {
           await client.cancelUpload(task.remotePath);
         } on Object {
@@ -138,6 +181,10 @@ class TransferService {
     } on ApiException catch (e) {
       task.status = TransferStatus.failed;
       task.error = e.message;
+      task.speed = 0;
+    } on HttpException catch (e) {
+      task.status = TransferStatus.failed;
+      task.error = '传输中断（连接被对方关闭）：${e.message}';
       task.speed = 0;
     } on Object catch (e) {
       task.status = TransferStatus.failed;
@@ -237,6 +284,239 @@ class TransferService {
     } finally {
       await sink.close();
     }
+  }
+
+  /// 目录复制（上传方向）：本机目录 → 对方目录。
+  Future<void> _runDirUpload(
+    TransferTask task,
+    SyncMateClient client,
+    _SpeedMeter meter,
+  ) async {
+    final root = Directory(task.localPath);
+    if (!await root.exists()) {
+      throw const ApiException(ApiErrorCode.notFound, '本地目录不存在');
+    }
+    final files = <_RemoteFileEntry>[];
+    await _walkLocal(root.path, task.remotePath, files);
+    task.total = files.fold(0, (sum, f) => sum + f.size);
+    _emit(task);
+
+    if (files.isEmpty) {
+      try {
+        await client.mkdir(task.remotePath);
+      } on ApiException {
+        // 目录已存在等情况可接受
+      }
+      return;
+    }
+    await _ensureRemoteDirs(client, files, task.remotePath);
+    for (final f in files) {
+      if (task.cancelToken.cancelled) throw const _Cancelled();
+      await _uploadFile(task, client, meter, f.local, f.remote);
+    }
+  }
+
+  /// 目录复制（下载方向）：对方目录 → 本机目录。
+  Future<void> _runDirDownload(
+    TransferTask task,
+    SyncMateClient client,
+    _SpeedMeter meter,
+  ) async {
+    final files = <_RemoteFileEntry>[];
+    await _walkRemote(client, task.remotePath, task.localPath, files);
+    task.total = files.fold(0, (sum, f) => sum + f.size);
+    _emit(task);
+
+    if (files.isEmpty) {
+      await Directory(task.localPath).create(recursive: true);
+      return;
+    }
+    await _ensureLocalDirs(task.localPath, files);
+    for (final f in files) {
+      if (task.cancelToken.cancelled) throw const _Cancelled();
+      await _downloadFile(task, client, meter, f.remote, f.local);
+    }
+  }
+
+  Future<void> _walkLocal(
+    String localDir,
+    String remoteDir,
+    List<_RemoteFileEntry> files,
+  ) async {
+    await for (final entity in Directory(localDir).list(followLinks: false)) {
+      if (entity is Directory) {
+        await _walkLocal(
+          entity.path,
+          _joinPath(remoteDir, entity.path.split(Platform.pathSeparator).last),
+          files,
+        );
+      } else if (entity is File) {
+        try {
+          final size = await entity.length();
+          files.add((
+            remote: _joinPath(remoteDir, entity.path.split(Platform.pathSeparator).last),
+            local: entity.path,
+            size: size,
+          ));
+        } on Object {
+          // 不可读文件跳过
+        }
+      }
+    }
+  }
+
+  Future<void> _walkRemote(
+    SyncMateClient client,
+    String remoteDir,
+    String localDir,
+    List<_RemoteFileEntry> files,
+  ) async {
+    final list = await client.listFiles(remoteDir);
+    for (final entry in list.entries) {
+      if (entry.isDir) {
+        await _walkRemote(
+          client,
+          _joinPath(remoteDir, entry.name),
+          _joinPath(localDir, entry.name),
+          files,
+        );
+      } else {
+        files.add((
+          remote: _joinPath(remoteDir, entry.name),
+          local: _joinPath(localDir, entry.name),
+          size: entry.size,
+        ));
+      }
+    }
+  }
+
+  Future<void> _ensureRemoteDirs(
+    SyncMateClient client,
+    List<_RemoteFileEntry> files,
+    String remoteRoot,
+  ) async {
+    final dirs = <String>{};
+    for (final f in files) {
+      var parent = _parentOf(f.remote);
+      while (parent.isNotEmpty && _inside(parent, remoteRoot) && parent != remoteRoot) {
+        dirs.add(parent);
+        parent = _parentOf(parent);
+      }
+    }
+    final sorted = dirs.toList()
+      ..sort((a, b) => a.length.compareTo(b.length));
+    for (final dir in sorted) {
+      try {
+        await client.mkdir(dir);
+      } on ApiException {
+        // 已存在或并发创建，忽略
+      }
+    }
+  }
+
+  String _parentOf(String path) {
+    final idx = _lastSeparatorIndex(path);
+    if (idx <= 0) return '';
+    return path.substring(0, idx);
+  }
+
+  Future<void> _ensureLocalDirs(
+    String localRoot,
+    List<_RemoteFileEntry> files,
+  ) async {
+    final dirs = <String>{};
+    for (final f in files) {
+      final idx = _lastSeparatorIndex(f.local);
+      if (idx > 0) dirs.add(f.local.substring(0, idx));
+    }
+    for (final dir in dirs) {
+      if (dir.startsWith(localRoot)) {
+        await Directory(dir).create(recursive: true);
+      }
+    }
+  }
+
+  Future<void> _uploadFile(
+    TransferTask task,
+    SyncMateClient client,
+    _SpeedMeter meter,
+    String localPath,
+    String remotePath,
+  ) async {
+    const chunkSize = 1024 * 1024;
+    final file = File(localPath);
+    final length = await file.length();
+    if (length == 0) return;
+    final raf = await file.open();
+    try {
+      var offset = 0;
+      while (offset < length) {
+        if (task.cancelToken.cancelled) throw const _Cancelled();
+        final end = offset + chunkSize < length ? offset + chunkSize : length;
+        await raf.setPosition(offset);
+        final data = await _readFully(raf, end - offset);
+        final isFinal = end >= length;
+        await client.uploadChunk(
+          remotePath,
+          offset: offset,
+          data: data,
+          isFinal: isFinal,
+        );
+        offset = end;
+        task.done += data.length;
+        task.speed = meter.update(task.done);
+        _emit(task);
+      }
+    } finally {
+      await raf.close();
+    }
+  }
+
+  Future<void> _downloadFile(
+    TransferTask task,
+    SyncMateClient client,
+    _SpeedMeter meter,
+    String remotePath,
+    String localPath,
+  ) async {
+    var localFile = File(localPath);
+    if (await localFile.exists()) {
+      localFile = File(_uniqueLocalPath(localPath));
+    }
+    final total = await client.fileSize(remotePath);
+    if (total <= 0) return;
+    final response = await client.download(remotePath, offset: 0);
+    final sink = localFile.openWrite(mode: FileMode.append);
+    try {
+      await for (final chunk in response.stream) {
+        if (task.cancelToken.cancelled) throw const _Cancelled();
+        sink.add(chunk);
+        task.done += chunk.length;
+        task.speed = meter.update(task.done);
+        _emit(task);
+      }
+      await sink.flush();
+    } finally {
+      await sink.close();
+    }
+  }
+
+  bool _isWindowsPath(String path) => path.contains('\\');
+
+  int _lastSeparatorIndex(String path) {
+    final backslash = path.lastIndexOf('\\');
+    final slash = path.lastIndexOf('/');
+    return backslash > slash ? backslash : slash;
+  }
+
+  bool _inside(String path, String root) {
+    if (!_isWindowsPath(path)) return path.startsWith(root);
+    return path.toLowerCase().startsWith(root.toLowerCase());
+  }
+
+  String _joinPath(String dir, String name) {
+    if (dir.endsWith('\\') || dir.endsWith('/')) return '$dir$name';
+    return '$dir${_isWindowsPath(dir) ? '\\' : '/'}$name';
   }
 
   String _uniqueLocalPath(String path) {
