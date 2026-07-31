@@ -38,8 +38,10 @@ jobs:
           grep -n "org.syncmate.app" android/app/build.gradle.kts
 
       - name: 静态分析
-        continue-on-error: true
         run: flutter analyze
+
+      - name: 单元测试
+        run: flutter test
 
       - name: 编译 Release APK
         run: flutter build apk --release

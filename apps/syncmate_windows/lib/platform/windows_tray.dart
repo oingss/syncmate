@@ -257,7 +257,7 @@ class WindowsTray {
       nid.uCallbackMessage = _callbackMessage;
       nid.hIcon = _loadIconW(0, 32512); // IDI_APPLICATION
       _writeUtf16Into(nid.szTip, 'SyncMate');
-      return _shellNotifyIconW(1, data) != 0; // NIM_ADD
+      return _shellNotifyIconW(1, data.cast<_NotifyIconData>()) != 0; // NIM_ADD
     } finally {
       _localFree(data);
     }
@@ -271,7 +271,7 @@ class WindowsTray {
       nid.cbSize = sizeOf<_NotifyIconData>();
       nid.hWnd = hwnd;
       nid.uID = _idIcon;
-      _shellNotifyIconW(2, data); // NIM_DELETE
+      _shellNotifyIconW(2, data.cast<_NotifyIconData>()); // NIM_DELETE
     } finally {
       _localFree(data);
     }

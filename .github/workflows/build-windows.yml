@@ -31,8 +31,10 @@ jobs:
           flutter pub get
 
       - name: 静态分析
-        continue-on-error: true
         run: flutter analyze
+
+      - name: 单元测试
+        run: flutter test
 
       - name: 编译 Release
         run: flutter build windows --release

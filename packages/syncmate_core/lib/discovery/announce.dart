@@ -49,7 +49,7 @@ class AnnounceMessage {
         return _invalid();
       }
       return AnnounceMessage(
-        v: v,
+        v: v!,
         alias: alias,
         deviceType: deviceType,
         fingerprint: fingerprint,

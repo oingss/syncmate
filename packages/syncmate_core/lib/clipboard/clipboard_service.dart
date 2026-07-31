@@ -92,13 +92,13 @@ class ClipboardService {
     if (_enabled == value) return;
     _enabled = value;
     if (value) {
-      _reconcile();
+      unawaited(_reconcile());
       _pingTimer = Timer.periodic(
         Constants.wsHeartbeatInterval,
         (_) => _pingAll(),
       );
       _reconcileTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-        if (_enabled) _reconcile();
+        if (_enabled) unawaited(_reconcile());
       });
     } else {
       _pingTimer?.cancel();
@@ -126,7 +126,11 @@ class ClipboardService {
       _closeSessionFingerprint(event.device.fingerprint);
       return;
     }
-    final device = event.device;
+    final device = switch (event) {
+      DeviceDiscovered(:final device) => device,
+      DeviceUpdated(:final device) => device,
+      DeviceExpired() => throw StateError('unreachable'),
+    };
     if (device.fingerprint == _self.fingerprint || !_enabled) return;
     final trusted = await _trustStore.find(device.fingerprint);
     if (trusted == null) return;
@@ -163,6 +167,22 @@ class ClipboardService {
     if (firstSeen == null) return false;
     return DateTime.now().difference(firstSeen) >=
         Constants.wsConnectFallbackDelay;
+  }
+
+  /// 周期/开关扫描：为所有在线且受信任的远端建立出站连接（幂等，
+  /// 已存在会话或尚未到兜底时机则跳过）。
+  Future<void> _reconcile() async {
+    if (!_enabled) return;
+    for (final device in _discovery.devices) {
+      if (device.fingerprint == _self.fingerprint) continue;
+      if (_sessions.containsKey(device.fingerprint)) continue;
+      final trusted = await _trustStore.find(device.fingerprint);
+      if (trusted == null) continue;
+      _peerFirstSeen.putIfAbsent(device.fingerprint, DateTime.now);
+      if (_shouldConnect(device.fingerprint)) {
+        _startOutgoing(device);
+      }
+    }
   }
 
   void _startOutgoing(DiscoveredDevice device) {

@@ -102,14 +102,15 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
 
   @override
   Future<String> normalizePath(String path) async {
-    final roots = _rootCache ?? (await roots()).map((e) => e.name).toList();
-    if (roots.isEmpty) {
+    final rootPaths =
+        _rootCache ?? (await roots()).map((e) => e.name).toList();
+    if (rootPaths.isEmpty) {
       throw const FsException(FsErrorKind.invalidPath, 'no storage root');
     }
     final normalized = p.normalize(path);
     final caseInsensitive = Platform.isWindows;
     final needle = caseInsensitive ? normalized.toLowerCase() : normalized;
-    for (final root in roots) {
+    for (final root in rootPaths) {
       final rootNorm = p.normalize(root);
       final haystack = caseInsensitive ? rootNorm.toLowerCase() : rootNorm;
       if (needle == haystack ||
@@ -278,7 +279,12 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
     }
     final dst = await uniquePath(dstBase);
     try {
-      await FileSystemEntity.rename(src, dst);
+      final srcType = await FileSystemEntity.type(src);
+      if (srcType == FileSystemEntityType.directory) {
+        await Directory(src).rename(dst);
+      } else {
+        await File(src).rename(dst);
+      }
       return dst;
     } on FsException {
       rethrow;

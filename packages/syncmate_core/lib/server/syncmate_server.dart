@@ -644,7 +644,7 @@ class SyncMateServer {
           (offset > 0 || hasRange) ? HttpStatus.partialContent : HttpStatus.ok;
       response.headers.contentType =
           ContentType('application', 'octet-stream');
-      response.headers.set(HttpHeaders.contentLength, end - offset + 1);
+      response.contentLength = end - offset + 1;
       if (offset > 0 || hasRange) {
         response.headers.set(HttpHeaders.contentRangeHeader,
             'bytes $offset-$end/$total');
