@@ -62,8 +62,11 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
     final paths = <String>[];
     if (Platform.isWindows) {
       final systemDrive = Platform.environment['SystemDrive'];
-      if (systemDrive != null && Directory(systemDrive).existsSync()) {
-        paths.add(systemDrive);
+      if (systemDrive != null && systemDrive.isNotEmpty) {
+        final sysRoot = p.normalize('$systemDrive\\');
+        if (Directory(sysRoot).existsSync()) {
+          paths.add(sysRoot);
+        }
       }
       for (var code = 65; code <= 90; code++) {
         final drive = '${String.fromCharCode(code)}:\\';
@@ -109,13 +112,24 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
     }
     final normalized = p.normalize(path);
     final caseInsensitive = Platform.isWindows;
-    final needle = caseInsensitive ? normalized.toLowerCase() : normalized;
+    final separator = Platform.isWindows ? p.separator : '/';
+    var resolved = normalized;
+    // drive-relative 路径（如 'C:foo' 表示 C 盘当前目录下的 foo）解析到盘根
+    if (Platform.isWindows &&
+        RegExp(r'^[a-zA-Z]:[^\\/]').hasMatch(normalized)) {
+      resolved = '${normalized.substring(0, 2)}\\${normalized.substring(2)}';
+    }
+    final needle = caseInsensitive ? resolved.toLowerCase() : resolved;
     for (final root in rootPaths) {
-      final rootNorm = p.normalize(root);
+      var rootNorm = p.normalize(root);
+      // 根目录自带尾部分隔符（如 'D:\'）时去掉，避免拼出双分隔符
+      if (rootNorm.length > 1 && rootNorm.endsWith(separator)) {
+        rootNorm = rootNorm.substring(0, rootNorm.length - 1);
+      }
       final haystack = caseInsensitive ? rootNorm.toLowerCase() : rootNorm;
       if (needle == haystack ||
-          needle.startsWith('$haystack${Platform.isWindows ? p.separator : '/'}')) {
-        return normalized;
+          needle.startsWith('$haystack$separator')) {
+        return resolved;
       }
     }
     throw const FsException(FsErrorKind.invalidPath, 'path outside storage roots');

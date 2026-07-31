@@ -4,9 +4,11 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -62,6 +64,62 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isGranted" -> result.success(storagePermissionGranted())
+                    "request" -> requestStoragePermission(result)
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_STORAGE_PERMISSIONS) {
+            val granted = grantResults.isNotEmpty() &&
+                grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            pendingPermissionResult?.success(granted)
+            pendingPermissionResult = null
+        }
+    }
+
+    /// Android 11+ 需要"所有文件访问"（MANAGE_EXTERNAL_STORAGE）；
+    /// Android 10 及以下用运行时读写权限。
+    private fun storagePermissionGranted(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requestStoragePermission(result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.data = Uri.parse("package:$packageName")
+                startActivity(intent)
+            } catch (e: Exception) {
+                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+            result.success(storagePermissionGranted())
+        } else {
+            pendingPermissionResult = result
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ),
+                REQ_STORAGE_PERMISSIONS
+            )
+        }
     }
 
     private fun startForegroundServiceCompat() {
@@ -111,6 +169,9 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CLIPBOARD_CHANNEL = "syncmate/clipboard"
         private const val SERVICE_CHANNEL = "syncmate/service"
+        private const val STORAGE_CHANNEL = "syncmate/storage"
         private const val REQ_POST_NOTIFICATIONS = 2001
+        private const val REQ_STORAGE_PERMISSIONS = 2002
+        private var pendingPermissionResult: MethodChannel.Result? = null
     }
 }

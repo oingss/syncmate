@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:syncmate_core/syncmate_core.dart';
 
+import '../platform/storage_permission.dart';
 import '../platform/system_clipboard_backend.dart';
 import 'devices_page.dart';
 
@@ -34,7 +35,8 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
+class _HomePageState extends State<HomePage>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   List<TrustedDevice> _trusted = [];
   final Set<String> _online = {};
   StreamSubscription<DiscoveryEvent>? _discoverySub;
@@ -42,6 +44,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   StreamSubscription<TransferEvent>? _transferSub;
   TabController? _tabController;
   bool _requestDialogVisible = false;
+  bool? _storageGranted;
 
   late final TransferService _transfers;
   late final SystemClipboardBackend _clipboardBackend;
@@ -57,6 +60,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _transfers = TransferService(self: widget.self);
     _clipboardBackend = SystemClipboardBackend();
     _clipboardService = ClipboardService(
@@ -76,10 +80,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       setState(() => _transferTasks = _transfers.tasks);
     });
     _refreshTrusted();
+    _checkStoragePermission();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _discoverySub?.cancel();
     _connectSub?.cancel();
     _transferSub?.cancel();
@@ -88,6 +94,28 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _tabController?.dispose();
     _transfers.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkStoragePermission();
+    }
+  }
+
+  Future<void> _checkStoragePermission() async {
+    final granted = await StoragePermission.isGranted();
+    if (!mounted || granted == _storageGranted) return;
+    setState(() => _storageGranted = granted);
+  }
+
+  Future<void> _grantStoragePermission() async {
+    final granted = await StoragePermission.request();
+    if (!mounted) return;
+    setState(() => _storageGranted = granted);
+    _showMessage(
+      granted ? '文件访问权限已授予' : '请在系统设置中开启「允许访问所有文件」',
+    );
   }
 
   void _toggleClipboard() {
@@ -299,7 +327,45 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           ),
         ],
       ),
-      body: _trusted.isEmpty ? _buildEmptyState(context) : _buildFileManager(context),
+      body: Column(
+        children: [
+          _buildStorageBanner(context),
+          Expanded(
+            child: _trusted.isEmpty
+                ? _buildEmptyState(context)
+                : _buildFileManager(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStorageBanner(BuildContext context) {
+    if (_storageGranted == null || _storageGranted!) {
+      return const SizedBox.shrink();
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+        child: Row(
+          children: [
+            Icon(Icons.folder_off, size: 18, color: scheme.onErrorContainer),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '未授予文件访问权限，本机及对方设备均无法访问本机文件',
+                style: TextStyle(color: scheme.onErrorContainer, fontSize: 12),
+              ),
+            ),
+            TextButton(
+              onPressed: _grantStoragePermission,
+              child: const Text('去授权'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
