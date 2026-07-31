@@ -1,0 +1,16 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+build/
+.flutter-plugins*
+*.iml
+.idea/
+
+# 平台构建产物（平台工程目录由 flutter create 生成后再按需忽略）
+apps/*/android/.gradle/
+apps/*/android/local.properties
+apps/*/windows/CMakeLists.txt.user
+apps/*/windows/flutter/ephemeral/
+
+# 其他
+*.log

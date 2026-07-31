@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syncmate.local/schemas/file_mkdir_request.schema.json",
+  "title": "SyncMate 新建目录请求",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["path"],
+  "properties": {
+    "path": { "type": "string", "description": "要创建的目录绝对路径" }
+  }
+}
