@@ -46,7 +46,9 @@ class _DevicesPageState extends State<DevicesPage> {
     if (!mounted) return;
     setState(() {
       _nearby = widget.discovery.devices;
-      if (event is DeviceDiscovered || event is DeviceUpdated) {
+      if (event is DeviceDiscovered) {
+        _online.add(event.device.fingerprint);
+      } else if (event is DeviceUpdated) {
         _online.add(event.device.fingerprint);
       } else if (event is DeviceExpired) {
         _online.remove(event.device.fingerprint);

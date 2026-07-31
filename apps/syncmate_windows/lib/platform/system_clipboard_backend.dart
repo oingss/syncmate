@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart';
 import 'package:syncmate_core/syncmate_core.dart';
 
@@ -46,7 +47,7 @@ class SystemClipboardBackend implements ClipboardBackend {
         } on MissingPluginException {
           // 平台实现待 flutter create 后接入（见 docs），忽略
         } on PlatformException catch (e) {
-          print('saveImageToPictures failed: ${e.message}');
+          debugPrint('saveImageToPictures failed: ${e.message}');
         }
       }
     }

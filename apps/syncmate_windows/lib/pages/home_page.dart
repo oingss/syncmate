@@ -99,7 +99,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void _onDiscoveryEvent(DiscoveryEvent event) {
     if (!mounted) return;
     setState(() {
-      if (event is DeviceDiscovered || event is DeviceUpdated) {
+      if (event is DeviceDiscovered) {
+        _online.add(event.device.fingerprint);
+      } else if (event is DeviceUpdated) {
         _online.add(event.device.fingerprint);
       } else if (event is DeviceExpired) {
         _online.remove(event.device.fingerprint);
@@ -786,7 +788,6 @@ class _RemotePaneState extends State<_RemotePane> {
                   '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
                 ),
           onTap: () => _select(entry),
-          onDoubleTap: entry.isDir ? () => _enter(entry) : null,
         );
       },
     );
@@ -1076,7 +1077,6 @@ class _LocalPaneState extends State<_LocalPane> {
                   '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
                 ),
           onTap: () => _select(entry),
-          onDoubleTap: entry.isDir ? () => _enter(entry) : null,
         );
       },
     );

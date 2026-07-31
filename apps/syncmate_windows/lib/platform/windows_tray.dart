@@ -2,13 +2,18 @@ import 'dart:async';
 import 'dart:ffi';
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 /// Windows 系统托盘图标（纯 dart:ffi 实现，零插件依赖）。
 ///
 /// 通过子类化 Flutter 主窗口（SetWindowLongPtrW GWLP_WNDPROC）接收
 /// Shell_NotifyIcon 的回调消息；单击恢复窗口，右键弹出菜单（显示 / 退出）。
 ///
-/// 注意：本文件在无 Flutter SDK 环境下无法编译验证，接入时需复查
-/// NOTIFYICONDATAW 布局（x64 = 976 字节）与回调线程模型（主线程消息泵）。
+/// FFI 说明：Dart 3.9+ 中 IntPtr/Uint32/UintPtr 为标记类，不可在 Dart 侧
+/// 构造；NativeCallable 回调必须使用其 Dart 表示类型（int），原生指针
+/// 经 nativeFunction.address 取得，调用原始窗口过程用 CallWindowProcW。
+/// 回调经 isolateLocal 绑定主线程消息泵，Windows 消息均在 UI 线程派发，
+/// 可安全调用。
 class WindowsTray {
   /// 尝试初始化托盘。非 Windows 或失败时返回 false（调用方降级为普通退出）。
   Future<bool> init({
@@ -22,12 +27,16 @@ class WindowsTray {
       final hwnd = _findMainWindow();
       if (hwnd == 0) return false;
       _hwnd = hwnd;
-      _proc = NativeCallable.isolateLocal(_wndProc);      final result = _setWindowLongPtr(
+      _proc = NativeCallable<_WndProcNative>.isolateLocal(
+        _wndProc,
+        exceptionalReturn: 0,
+      );
+      final procPointer = _proc!.nativeFunction;
+      _originalProc = _setWindowLongPtrW(
         hwnd,
         _gwlWndProc,
-        _proc!.nativeAddress.address,
+        procPointer.address,
       );
-      _originalProc = result;
       final ok = _addIcon(hwnd);
       if (!ok) {
         _restoreOriginalProc();
@@ -38,7 +47,7 @@ class WindowsTray {
       _installed = true;
       return true;
     } on Object catch (e) {
-      print('WindowsTray init failed: $e');
+      debugPrint('WindowsTray init failed: $e');
       return false;
     }
   }
@@ -66,7 +75,7 @@ class WindowsTray {
   bool _installed = false;
   int _hwnd = 0;
   int _originalProc = 0;
-  NativeCallable<IntPtr Function(IntPtr, Uint32, UintPtr, IntPtr)>? _proc;
+  NativeCallable<_WndProcNative>? _proc;
   Future<void> Function()? _onShow;
   Future<void> Function()? _onExit;
 
@@ -77,21 +86,21 @@ class WindowsTray {
   static const _wmRButtonUp = 0x0205;
   static const _wmLButtonUp = 0x0202;
   static const _swHide = 0;
+  static const _swShow = 5;
   static const _nifMessage = 0x1;
   static const _nifIcon = 0x2;
   static const _nifTip = 0x4;
-  static const _nifState = 0x8;
-  static const _nmSelect = 0x0400; // NIN_SELECT = WM_USER
   static const _idIcon = 1;
   static const _cmdShow = 1;
   static const _cmdExit = 2;
   static const _mfString = 0x0;
-  static const _swShow = 5;
   static const _lmemZeroInit = 0x40;
   static const _tpmReturnCmd = 0x0100;
   static const _tpmRightButton = 0x0002;
 
-  IntPtr _wndProc(int hwnd, int message, int wParam, int lParam) {
+  /// 子类窗口过程。签名须与 WNDPROC 的 Dart 表示一致：
+  /// (Pointer, int, int, int) → int，返回 LRESULT。
+  int _wndProc(Pointer hwnd, int message, int wParam, int lParam) {
     if (message == _wmClose) {
       // 关闭按钮 → 隐藏到托盘，应用与文件服务继续运行
       _showWindow(_hwnd, _swHide);
@@ -113,21 +122,9 @@ class WindowsTray {
     return _callOriginal(hwnd, message, wParam, lParam);
   }
 
-  IntPtr _callOriginal(int hwnd, int message, int wParam, int lParam) {
-    if (_originalProc == 0) return IntPtr.fromAddress(0);
-    final original = Pointer<NativeFunction<IntPtr Function(
-      IntPtr,
-      Uint32,
-      UintPtr,
-      IntPtr,
-    )>>.fromAddress(_originalProc);
-    return original
-        .asFunction<IntPtr Function(int, int, int, int)>()(
-      hwnd,
-      message,
-      wParam,
-      lParam,
-    );
+  int _callOriginal(Pointer hwnd, int message, int wParam, int lParam) {
+    if (_originalProc == 0) return 0;
+    return _callWindowProcW(_originalProc, hwnd.address, message, wParam, lParam);
   }
 
   Future<void> _restoreWindow() async {
@@ -144,9 +141,9 @@ class WindowsTray {
     try {
       final showText = _utf16('显示主窗口');
       final exitText = _utf16('退出');
-      _appendMenu(menu, _mfString, _cmdShow, showText);
-      _appendMenu(menu, _mfString, _cmdExit, exitText);
-      final pt = _getCursorPos();
+      _appendMenuW(menu, _mfString, _cmdShow, showText);
+      _appendMenuW(menu, _mfString, _cmdExit, exitText);
+      final pt = _readCursorPos();
       final command = _trackPopupMenu(
         menu,
         _tpmReturnCmd | _tpmRightButton,
@@ -189,6 +186,10 @@ class WindowsTray {
       IntPtr Function(IntPtr, Int32, IntPtr),
       int Function(int, int, int)>('SetWindowLongPtrW');
 
+  static final _callWindowProcW = _user32.lookupFunction<
+      IntPtr Function(IntPtr, IntPtr, Uint32, IntPtr, IntPtr),
+      int Function(int, int, int, int, int)>('CallWindowProcW');
+
   static final _showWindow = _user32.lookupFunction<
       Int32 Function(IntPtr, Int32),
       int Function(int, int)>('ShowWindow');
@@ -214,8 +215,10 @@ class WindowsTray {
       int Function(int, int, int, Pointer<Uint16>)>('AppendMenuW');
 
   static final _trackPopupMenu = _user32.lookupFunction<
-      Uint32 Function(IntPtr, Uint32, Int32, Int32, Int32, IntPtr, Pointer<IntPtr>),
-      int Function(int, int, int, int, int, int, Pointer<IntPtr>)>('TrackPopupMenu');
+      Uint32 Function(
+          IntPtr, Uint32, Int32, Int32, Int32, IntPtr, Pointer<IntPtr>),
+      int Function(int, int, int, int, int, int, Pointer<IntPtr>)>(
+      'TrackPopupMenu');
 
   static final _destroyMenu = _user32.lookupFunction<
       Int32 Function(IntPtr),
@@ -276,15 +279,12 @@ class WindowsTray {
 
   void _restoreOriginalProc() {
     if (_hwnd == 0 || _originalProc == 0) return;
-    _setWindowLongPtr(_hwnd, _gwlWndProc, _originalProc);
+    _setWindowLongPtrW(_hwnd, _gwlWndProc, _originalProc);
     _originalProc = 0;
   }
 
-  int _setWindowLongPtr(int hwnd, int index, int value) =>
-      _setWindowLongPtrW(hwnd, index, IntPtr.fromAddress(value)).address;
-
-  List<int> _getCursorPos() {
-    final pt = _localAlloc(0, 8);
+  List<int> _readCursorPos() {
+    final pt = _localAlloc(_lmemZeroInit, 8);
     try {
       _getCursorPos(pt.cast<Int32>());
       return [pt.cast<Int32>()[0], pt.cast<Int32>()[1]];
@@ -308,7 +308,8 @@ class WindowsTray {
   }
 
   static void _writeUtf16Into(Array<Uint16> target, String text) {
-    final length = text.length < target.length ? text.length : target.length;
+    const capacity = 128; // 与 _NotifyIconData.szTip 声明长度一致
+    final length = text.length < capacity - 1 ? text.length : capacity - 1;
     for (var i = 0; i < length; i++) {
       target[i] = text.codeUnitAt(i);
     }
@@ -316,6 +317,7 @@ class WindowsTray {
   }
 }
 
+/// NOTIFYICONDATAW 布局（x64 = 976 字节）。
 final class _NotifyIconData extends Struct {
   @Uint32()
   external int cbSize;
@@ -362,3 +364,11 @@ final class _NotifyIconData extends Struct {
   @IntPtr()
   external int hBalloonIcon;
 }
+
+/// WNDPROC 原生签名：LRESULT CALLBACK(HWND, UINT, WPARAM, LPARAM)。
+typedef _WndProcNative = IntPtr Function(
+  Pointer hWnd,
+  Uint32 uMsg,
+  IntPtr wParam,
+  IntPtr lParam,
+);
