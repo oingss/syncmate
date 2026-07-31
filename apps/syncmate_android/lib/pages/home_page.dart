@@ -819,29 +819,51 @@ class _FilePaneState extends State<_FilePane> {
   String get _currentDir =>
       _path ?? (_entries.isEmpty ? '' : _entries.first.name);
 
-  String _zipBaseName(FileEntry entry) {
-    final base =
-        entry.isDir ? entry.name : p.basenameWithoutExtension(entry.name);
-    return '$base.zip';
+  String _compressBaseName(FileEntry entry) =>
+      entry.isDir ? entry.name : p.basenameWithoutExtension(entry.name);
+
+  Future<String> _doCompress(FileEntry entry, String format) {
+    final ext = format == 'tar.gz' ? 'tar.gz' : 'zip';
+    final archive = _join(_currentDir, '${_compressBaseName(entry)}.$ext');
+    final fullPath = _joinCurrent(entry.name);
+    if (_isRemote) return _clientFor().compress(fullPath, archive);
+    return _fs.compress(fullPath, archive);
   }
 
-  Future<String> _doZip(FileEntry entry) {
-    final archive = _join(_currentDir, _zipBaseName(entry));
+  Future<String> _doExtract(FileEntry entry) {
     final fullPath = _joinCurrent(entry.name);
-    if (_isRemote) return _clientFor().zip(fullPath, archive);
-    return _fs.zip(fullPath, archive);
+    final container = _isContainerArchive(entry.name);
+    final target = container
+        ? _join(_currentDir, _archiveBaseName(entry.name))
+        : _currentDir;
+    if (_isRemote) return _clientFor().extract(fullPath, target);
+    return _fs.extract(fullPath, target);
   }
 
-  Future<String> _doUnzip(FileEntry entry) {
-    final target = _join(_currentDir, p.basenameWithoutExtension(entry.name));
-    final fullPath = _joinCurrent(entry.name);
-    if (_isRemote) return _clientFor().unzip(fullPath, target);
-    return _fs.unzip(fullPath, target);
+  Future<String?> _pickCompressFormat() {
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('选择压缩格式'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(dialogContext).pop('zip'),
+            child: const Text('zip'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(dialogContext).pop('tar.gz'),
+            child: const Text('tar.gz'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _zipEntry(FileEntry entry) async {
+    final format = await _pickCompressFormat();
+    if (format == null || !mounted) return;
     try {
-      final result = await _doZip(entry);
+      final result = await _doCompress(entry, format);
       _showMessage('已压缩为 ${p.basename(result)}');
     } on FsException catch (e) {
       _showMessage('压缩失败：${e.message}');
@@ -859,7 +881,7 @@ class _FilePaneState extends State<_FilePane> {
 
   Future<void> _unzipEntry(FileEntry entry) async {
     try {
-      final result = await _doUnzip(entry);
+      final result = await _doExtract(entry);
       _showMessage('已解压到 ${p.basename(result)}');
     } on FsException catch (e) {
       _showMessage('解压失败：${e.message}');
@@ -876,9 +898,11 @@ class _FilePaneState extends State<_FilePane> {
   }
 
   Future<void> _zipAndMove(FileEntry entry) async {
+    final format = await _pickCompressFormat();
+    if (format == null || !mounted) return;
     final String result;
     try {
-      result = await _doZip(entry);
+      result = await _doCompress(entry, format);
     } on FsException catch (e) {
       _showMessage('压缩失败：${e.message}');
       return;
@@ -901,7 +925,7 @@ class _FilePaneState extends State<_FilePane> {
   Future<void> _unzipAndMove(FileEntry entry) async {
     final String result;
     try {
-      result = await _doUnzip(entry);
+      result = await _doExtract(entry);
     } on FsException catch (e) {
       _showMessage('解压失败：${e.message}');
       return;
@@ -915,7 +939,12 @@ class _FilePaneState extends State<_FilePane> {
     if (!mounted) return;
     _load();
     widget.onTransferRequested(
-      FileEntry(name: p.basename(result), isDir: true, size: 0, modified: 0),
+      FileEntry(
+        name: p.basename(result),
+        isDir: _isContainerArchive(entry.name),
+        size: 0,
+        modified: 0,
+      ),
       result,
       true,
     );
@@ -943,7 +972,11 @@ class _FilePaneState extends State<_FilePane> {
       return;
     }
     if (!mounted) return;
-    final edited = await _editDialog(entry.name, initial);
+    final edited = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => _EditPage(title: entry.name, initial: initial),
+      ),
+    );
     if (edited == null || !mounted) return;
     try {
       if (_isRemote) {
@@ -964,40 +997,6 @@ class _FilePaneState extends State<_FilePane> {
     }
     if (!mounted) return;
     _load();
-  }
-
-  Future<String?> _editDialog(String title, String initial) {
-    final controller = TextEditingController(text: initial);
-    return showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(title, overflow: TextOverflow.ellipsis),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 320,
-          child: TextField(
-            controller: controller,
-            maxLines: null,
-            expands: true,
-            keyboardType: TextInputType.multiline,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: '文本内容（UTF-8）',
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -1217,6 +1216,108 @@ class _FilePaneState extends State<_FilePane> {
   }
 }
 
+/// 支持的压缩包扩展名（解压可用）。
+bool _isArchiveName(String name) {
+  final lower = name.toLowerCase();
+  return lower.endsWith('.zip') ||
+      lower.endsWith('.tar') ||
+      lower.endsWith('.tar.gz') ||
+      lower.endsWith('.tgz') ||
+      lower.endsWith('.tar.bz2') ||
+      lower.endsWith('.tbz2') ||
+      lower.endsWith('.tbz') ||
+      lower.endsWith('.tar.xz') ||
+      lower.endsWith('.txz') ||
+      lower.endsWith('.gz') ||
+      lower.endsWith('.bz2') ||
+      lower.endsWith('.xz');
+}
+
+/// 容器型压缩包（解压产出文件夹）；单文件型（.gz/.bz2/.xz）解压产出文件。
+bool _isContainerArchive(String name) {
+  final lower = name.toLowerCase();
+  return lower.endsWith('.zip') ||
+      lower.endsWith('.tar') ||
+      lower.endsWith('.tar.gz') ||
+      lower.endsWith('.tgz') ||
+      lower.endsWith('.tar.bz2') ||
+      lower.endsWith('.tbz2') ||
+      lower.endsWith('.tbz') ||
+      lower.endsWith('.tar.xz') ||
+      lower.endsWith('.txz');
+}
+
+/// 去掉压缩包扩展名（含复合扩展名，如 foo.tar.gz → foo）。
+String _archiveBaseName(String name) {
+  final lower = name.toLowerCase();
+  for (final ext in [
+    '.tar.gz', '.tar.bz2', '.tar.xz', '.tbz2', '.tbz', '.txz', '.tgz',
+    '.zip', '.tar', '.gz', '.bz2', '.xz',
+  ]) {
+    if (lower.endsWith(ext)) {
+      return name.substring(0, name.length - ext.length);
+    }
+  }
+  return name;
+}
+
+/// 独立文本编辑页（保存后以内容字符串返回）。
+class _EditPage extends StatefulWidget {
+  const _EditPage({required this.title, required this.initial});
+
+  final String title;
+  final String initial;
+
+  @override
+  State<_EditPage> createState() => _EditPageState();
+}
+
+class _EditPageState extends State<_EditPage> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initial);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title, overflow: TextOverflow.ellipsis),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(_controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: TextField(
+          controller: _controller,
+          maxLines: null,
+          expands: true,
+          autofocus: true,
+          keyboardType: TextInputType.multiline,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            hintText: '文本内容（UTF-8）',
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 enum _EntryAction {
   copy,
   move,
@@ -1235,7 +1336,8 @@ Future<_EntryAction?> _showActionDialog(
 ) {
   final name = entry.name;
   final isDir = entry.isDir;
-  final isZip = name.toLowerCase().endsWith('.zip');
+  final isArchive = _isArchiveName(name);
+  final isContainer = _isContainerArchive(name);
   return showDialog<_EntryAction>(
     context: context,
     builder: (dialogContext) => AlertDialog(
@@ -1277,15 +1379,17 @@ Future<_EntryAction?> _showActionDialog(
               dense: true,
               leading: const Icon(Icons.folder_zip),
               title: const Text('压缩'),
-              subtitle: const Text('打包为 zip'),
+              subtitle: const Text('打包为 zip / tar.gz'),
               onTap: () => Navigator.of(dialogContext).pop(_EntryAction.zip),
             ),
-            if (isZip)
+            if (isArchive)
               ListTile(
                 dense: true,
                 leading: const Icon(Icons.unarchive),
                 title: const Text('解压'),
-                subtitle: const Text('解压到同名文件夹'),
+                subtitle: Text(
+                  isContainer ? '解压到同名文件夹' : '解压为同名文件',
+                ),
                 onTap: () => Navigator.of(dialogContext).pop(_EntryAction.unzip),
               ),
             ListTile(
@@ -1296,12 +1400,14 @@ Future<_EntryAction?> _showActionDialog(
               onTap: () =>
                   Navigator.of(dialogContext).pop(_EntryAction.zipMove),
             ),
-            if (isZip)
+            if (isArchive)
               ListTile(
                 dense: true,
                 leading: const Icon(Icons.unarchive_outlined),
                 title: const Text('解压并移动'),
-                subtitle: const Text('解压后移动到另一视图的当前目录'),
+                subtitle: Text(
+                  isContainer ? '解压后移动到另一视图的当前目录' : '解压为文件后移动到另一视图的当前目录',
+                ),
                 onTap: () =>
                     Navigator.of(dialogContext).pop(_EntryAction.unzipMove),
               ),

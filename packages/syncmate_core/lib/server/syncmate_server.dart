@@ -175,10 +175,10 @@ class SyncMateServer {
         await _handleReadContent(request);
       } else if (path == '/api/files/content' && request.method == 'PUT') {
         await _handleWriteContent(request);
-      } else if (path == '/api/files/zip' && request.method == 'POST') {
-        await _handleZip(request);
-      } else if (path == '/api/files/unzip' && request.method == 'POST') {
-        await _handleUnzip(request);
+      } else if (path == '/api/files/compress' && request.method == 'POST') {
+        await _handleCompress(request);
+      } else if (path == '/api/files/extract' && request.method == 'POST') {
+        await _handleExtract(request);
       } else if (path == Constants.wsPath && request.method == 'GET') {
         await _handleClipboardWs(request);
       } else {
@@ -601,7 +601,7 @@ class SyncMateServer {
     }
   }
 
-  Future<void> _handleZip(HttpRequest request) async {
+  Future<void> _handleCompress(HttpRequest request) async {
     if (!await _isTrusted(request)) {
       await _writeError(
         request,
@@ -637,15 +637,15 @@ class SyncMateServer {
     }
     final fingerprint = request.headers.value(_headerFingerprint)!;
     try {
-      final actual = await _fs.zip(source, archive);
-      _audit('zip', fingerprint, source, extra: '-> $actual');
+      final actual = await _fs.compress(source, archive);
+      _audit('compress', fingerprint, source, extra: '-> $actual');
       await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': actual});
     } on FsException catch (e) {
       await _writeFsError(request, e);
     }
   }
 
-  Future<void> _handleUnzip(HttpRequest request) async {
+  Future<void> _handleExtract(HttpRequest request) async {
     if (!await _isTrusted(request)) {
       await _writeError(
         request,
@@ -681,8 +681,8 @@ class SyncMateServer {
     }
     final fingerprint = request.headers.value(_headerFingerprint)!;
     try {
-      final actual = await _fs.unzip(archive, target);
-      _audit('unzip', fingerprint, archive, extra: '-> $actual');
+      final actual = await _fs.extract(archive, target);
+      _audit('extract', fingerprint, archive, extra: '-> $actual');
       await _writeJson(request, HttpStatus.ok, {'ok': true, 'path': actual});
     } on FsException catch (e) {
       await _writeFsError(request, e);

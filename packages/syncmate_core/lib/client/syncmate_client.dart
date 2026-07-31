@@ -283,18 +283,20 @@ class SyncMateClient {
     }
   }
 
-  /// 压缩远端文件/文件夹为 zip，返回实际压缩包路径。
-  Future<String> zip(String source, String archive) async {
-    final json = await _postJson('/api/files/zip', {
+  /// 压缩远端文件/文件夹。格式由 archive 扩展名决定（.zip / .tar.gz），
+  /// 返回实际压缩包路径。
+  Future<String> compress(String source, String archive) async {
+    final json = await _postJson('/api/files/compress', {
       'source': source,
       'archive': archive,
     });
     return json['path'] as String? ?? archive;
   }
 
-  /// 解压远端 zip 到目标目录，返回实际解压目录路径。
-  Future<String> unzip(String archive, String target) async {
-    final json = await _postJson('/api/files/unzip', {
+  /// 解压远端压缩包（zip/tar/tar.gz/tgz/tar.bz2/tbz2/tbz/tar.xz/txz/gz/bz2/xz），
+  /// 返回实际解压目录或文件路径。
+  Future<String> extract(String archive, String target) async {
+    final json = await _postJson('/api/files/extract', {
       'archive': archive,
       'target': target,
     });

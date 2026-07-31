@@ -66,13 +66,18 @@ abstract class FileSystemAdapter {
   /// 以 UTF-8 覆写文本文件。
   Future<void> writeText(String path, String content);
 
-  /// 将文件/文件夹（含子目录）压缩为 zip；目标已存在时自动重命名，
-  /// 返回实际压缩包路径。
-  Future<String> zip(String sourcePath, String archivePath);
+  /// 压缩文件/文件夹（含子目录）。格式由目标扩展名决定：
+  /// `.zip`（流式）或 `.tar.gz`；其他扩展名抛 [FsException(badRequest)]。
+  /// 目标已存在时自动重命名，返回实际压缩包路径。
+  Future<String> compress(String sourcePath, String archivePath);
 
-  /// 解压 zip 到目标目录（自动创建，已存在时自动重命名），
-  /// 返回实际解压目录路径。
-  Future<String> unzip(String archivePath, String targetDir);
+  /// 解压。格式由扩展名识别：
+  /// - 容器格式 `.zip/.tar/.tar.gz/.tgz/.tar.bz2/.tbz2/.tbz/.tar.xz/.txz`：
+  ///   解压到 [targetDir]（自动创建，已存在时自动重命名），返回目录路径；
+  /// - 单文件格式 `.gz/.bz2/.xz`：解压到 [targetDir]（须已存在），
+  ///   返回解压出的文件路径；
+  /// 不支持或非法抛 [FsException(badRequest)]。
+  Future<String> extract(String archivePath, String targetDir);
 }
 
 class LocalFileSystemAdapter implements FileSystemAdapter {
@@ -466,23 +471,42 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
   }
 
   @override
-  Future<String> zip(String sourcePath, String archivePath) async {
+  Future<String> compress(String sourcePath, String archivePath) async {
     final src = await normalizePath(sourcePath);
     final dst = await uniquePath(await normalizePath(archivePath));
+    final lower = dst.toLowerCase();
     final type = await FileSystemEntity.type(src);
     if (type == FileSystemEntityType.notFound) {
       throw FsException(FsErrorKind.notFound, 'path not found: $sourcePath');
     }
+    if (!lower.endsWith('.zip') && !lower.endsWith('.tar.gz')) {
+      throw const FsException(
+          FsErrorKind.badRequest, 'unsupported archive format (zip/tar.gz)');
+    }
     try {
-      final encoder = ZipFileEncoder();
-      encoder.create(dst);
-      if (type == FileSystemEntityType.directory) {
-        // 不带目录名作根：解压到同名文件夹后内容直接落位（往返一致）
-        await encoder.addDirectory(Directory(src), includeDirName: false);
+      if (lower.endsWith('.zip')) {
+        final encoder = ZipFileEncoder();
+        encoder.create(dst);
+        if (type == FileSystemEntityType.directory) {
+          // 不带目录名作根：解压到同名文件夹后内容直接落位（往返一致）
+          await encoder.addDirectory(Directory(src), includeDirName: false);
+        } else {
+          await encoder.addFile(File(src));
+        }
+        await encoder.close();
       } else {
-        await encoder.addFile(File(src));
+        final archive = Archive();
+        if (type == FileSystemEntityType.directory) {
+          await _addDirToArchive(archive, Directory(src), src);
+        } else {
+          final file = File(src);
+          final bytes = await file.readAsBytes();
+          archive.addFile(ArchiveFile.bytes(p.basename(src), bytes));
+        }
+        final tar = TarEncoder().encode(archive);
+        final gz = GZipEncoder().encode(tar);
+        await File(dst).writeAsBytes(gz, flush: true);
       }
-      await encoder.close();
     } on FsException {
       rethrow;
     } on Object catch (e) {
@@ -491,49 +515,177 @@ class LocalFileSystemAdapter implements FileSystemAdapter {
     return dst;
   }
 
+  Future<void> _addDirToArchive(Archive archive, Directory dir, String root) async {
+    await for (final entity in dir.list(followLinks: false)) {
+      final relative =
+          p.relative(entity.path, from: root).replaceAll('\\', '/');
+      if (entity is Directory) {
+        await _addDirToArchive(archive, entity, root);
+      } else {
+        final bytes = await File(entity.path).readAsBytes();
+        archive.addFile(ArchiveFile.bytes(relative, bytes));
+      }
+    }
+  }
+
+  /// 压缩层：zip / tar / gzip / bzip2 / xz，由扩展名识别。
+  String? _compressionLayer(String lower) {
+    if (lower.endsWith('.zip')) return 'zip';
+    if (lower.endsWith('.tar')) return 'tar';
+    if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return 'gz';
+    if (lower.endsWith('.tar.bz2') ||
+        lower.endsWith('.tbz2') ||
+        lower.endsWith('.tbz')) {
+      return 'bz2';
+    }
+    if (lower.endsWith('.tar.xz') || lower.endsWith('.txz')) return 'xz';
+    if (lower.endsWith('.gz')) return 'gz';
+    if (lower.endsWith('.bz2')) return 'bz2';
+    if (lower.endsWith('.xz')) return 'xz';
+    return null;
+  }
+
+  bool _magicOk(String layer, List<int> bytes) {
+    switch (layer) {
+      case 'zip':
+        return bytes.length >= 4 &&
+            bytes[0] == 0x50 &&
+            bytes[1] == 0x4B &&
+            bytes[2] == 0x03 &&
+            bytes[3] == 0x04;
+      case 'tar':
+        // ustar（POSIX/GNU）或旧式 tar（magic 全零）
+        if (bytes.length < 262) return false;
+        final magic = bytes.sublist(257, 262);
+        final isUstar = magic[0] == 0x75 &&
+            magic[1] == 0x73 &&
+            magic[2] == 0x74 &&
+            magic[3] == 0x61 &&
+            magic[4] == 0x72;
+        return isUstar || magic.every((b) => b == 0);
+      case 'gz':
+        return bytes.length >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B;
+      case 'bz2':
+        return bytes.length >= 3 &&
+            bytes[0] == 0x42 &&
+            bytes[1] == 0x5A &&
+            bytes[2] == 0x68;
+      case 'xz':
+        return bytes.length >= 6 &&
+            bytes[0] == 0xFD &&
+            bytes[1] == 0x37 &&
+            bytes[2] == 0x7A &&
+            bytes[3] == 0x58 &&
+            bytes[4] == 0x5A &&
+            bytes[5] == 0x00;
+      default:
+        return false;
+    }
+  }
+
+  Archive _decodeContainer(String layer, List<int> bytes) {
+    try {
+      switch (layer) {
+        case 'zip':
+          return ZipDecoder().decodeBytes(bytes);
+        case 'tar':
+          return TarDecoder().decodeBytes(bytes);
+        case 'gz':
+          return TarDecoder().decodeBytes(GZipDecoder().decodeBytes(bytes));
+        case 'bz2':
+          return TarDecoder().decodeBytes(BZip2Decoder().decodeBytes(bytes));
+        case 'xz':
+          return TarDecoder().decodeBytes(XZDecoder().decodeBytes(bytes));
+        default:
+          throw const FsException(
+              FsErrorKind.badRequest, 'unsupported archive format');
+      }
+    } on FsException {
+      rethrow;
+    } on Object {
+      throw const FsException(FsErrorKind.badRequest, 'invalid archive');
+    }
+  }
+
+  List<int> _decompressSingle(String layer, List<int> bytes) {
+    try {
+      switch (layer) {
+        case 'gz':
+          return GZipDecoder().decodeBytes(bytes);
+        case 'bz2':
+          return BZip2Decoder().decodeBytes(bytes);
+        case 'xz':
+          return XZDecoder().decodeBytes(bytes);
+        default:
+          throw const FsException(
+              FsErrorKind.badRequest, 'unsupported archive format');
+      }
+    } on FsException {
+      rethrow;
+    } on Object {
+      throw const FsException(FsErrorKind.badRequest, 'invalid archive');
+    }
+  }
+
+  static const _containerExts = [
+    '.zip', '.tar',
+    '.tar.gz', '.tgz',
+    '.tar.bz2', '.tbz2', '.tbz',
+    '.tar.xz', '.txz',
+  ];
+
   @override
-  Future<String> unzip(String archivePath, String targetDir) async {
+  Future<String> extract(String archivePath, String targetDir) async {
     final src = await normalizePath(archivePath);
-    final base = await uniquePath(await normalizePath(targetDir));
     final file = File(src);
     if (!await file.exists()) {
       throw FsException(FsErrorKind.notFound, 'path not found: $archivePath');
     }
+    final lower = src.toLowerCase();
+    final layer = _compressionLayer(lower);
+    if (layer == null) {
+      throw const FsException(
+          FsErrorKind.badRequest, 'unsupported archive format');
+    }
     try {
       final bytes = await file.readAsBytes();
-      final validMagic = bytes.length >= 4 &&
-          bytes[0] == 0x50 &&
-          bytes[1] == 0x4B &&
-          bytes[2] == 0x03 &&
-          bytes[3] == 0x04;
-      if (!validMagic) {
-        throw const FsException(FsErrorKind.badRequest, 'invalid zip archive');
+      if (!_magicOk(layer, bytes)) {
+        throw const FsException(FsErrorKind.badRequest, 'invalid archive');
       }
-      final Archive archive;
-      try {
-        archive = ZipDecoder().decodeBytes(bytes);
-      } on Object {
-        throw const FsException(FsErrorKind.badRequest, 'invalid zip archive');
+      final container =
+          _containerExts.any((ext) => lower.endsWith(ext));
+      if (container) {
+        final base = await uniquePath(await normalizePath(targetDir));
+        final archive = _decodeContainer(layer, bytes);
+        if (archive.files.isEmpty) {
+          throw const FsException(FsErrorKind.badRequest, 'empty archive');
+        }
+        await Directory(base).create(recursive: true);
+        final separator = Platform.isWindows ? p.separator : '/';
+        for (final entry in archive.files) {
+          if (!entry.isFile) continue;
+          final target = p.normalize(p.join(base, entry.name));
+          // 防 zip-slip：条目路径必须落在目标目录内
+          if (!target.startsWith('$base$separator')) continue;
+          final out = File(target);
+          await out.create(recursive: true);
+          await out.writeAsBytes(entry.content);
+        }
+        return base;
       }
-      if (archive.files.isEmpty) {
-        throw const FsException(FsErrorKind.badRequest, 'empty zip archive');
-      }
-      await Directory(base).create(recursive: true);
-      final separator = Platform.isWindows ? p.separator : '/';
-      for (final entry in archive.files) {
-        if (!entry.isFile) continue;
-        final target = p.normalize(p.join(base, entry.name));
-        // 防 zip-slip：条目路径必须落在目标目录内
-        if (!target.startsWith('$base$separator')) continue;
-        final out = File(target);
-        await out.create(recursive: true);
-        await out.writeAsBytes(entry.content);
-      }
+      // 单文件格式：解压到已有目录，文件名去掉压缩扩展名
+      final dir = await normalizePath(targetDir);
+      final outName = p.basenameWithoutExtension(src);
+      final dst = await uniquePath(p.join(dir, outName));
+      final decompressed = _decompressSingle(layer, bytes);
+      final out = File(dst);
+      await out.create(recursive: true);
+      await out.writeAsBytes(decompressed, flush: true);
+      return dst;
     } on FsException {
       rethrow;
     } on Object catch (e) {
       throw FsException(FsErrorKind.ioError, e.toString());
     }
-    return base;
   }
 }
