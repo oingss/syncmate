@@ -1,0 +1,44 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: build-macos
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/syncmate_macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # macos/ 由 flutter create 生成；已有文件不会被覆盖，其中
+      # macos/Runner/*.entitlements 已按仓库版本提交（关闭沙箱 + 网络访问）。
+      - name: 生成 macOS 平台工程
+        run: |
+          flutter create --platforms macos --org org.syncmate .
+          flutter pub get
+
+      - name: 静态分析
+        run: flutter analyze
+
+      - name: 单元测试
+        run: flutter test
+
+      - name: 编译 Release
+        run: flutter build macos --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncmate-macos
+          path: apps/syncmate_macos/build/macos/Build/Products/Release/syncmate_macos.app
+          if-no-files-found: error

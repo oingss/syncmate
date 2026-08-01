@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://syncmate.local/schemas/error_response.schema.json",
+  "title": "SyncMate 统一错误响应",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": ["FORBIDDEN", "BAD_REQUEST", "NOT_FOUND", "INVALID_PATH", "CONFLICT", "IO_ERROR", "REJECTED", "TIMEOUT"]
+        },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

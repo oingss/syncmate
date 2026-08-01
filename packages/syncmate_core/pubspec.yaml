@@ -1,0 +1,14 @@
+name: syncmate_core
+description: SyncMate 通信核心包（纯 Dart，不依赖 Flutter，两端 UI 共享）
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.3.0
+
+dependencies:
+  archive: ^4.0.9
+  path: ^1.9.0
+
+dev_dependencies:
+  lints: ^4.0.0
