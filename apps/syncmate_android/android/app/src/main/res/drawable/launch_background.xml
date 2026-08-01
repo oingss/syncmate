@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动屏背景：纯色，不含任何文字/图标占位，避免与 Flutter 首帧的 AppBar 标题
+     在过渡瞬间叠加出现"两行 SyncMate"的视觉效果。 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@android:color/white" />
+</layer-list>

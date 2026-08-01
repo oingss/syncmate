@@ -56,6 +56,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final GlobalKey<_FilePaneState> _paneBKey = GlobalKey<_FilePaneState>();
   List<TransferTask> _transferTasks = [];
 
+  /// 当前焦点视图（左/右），决定顶部标题栏下方显示哪一侧的路径。
+  bool _focusIsPaneA = true;
+
   @override
   void initState() {
     super.initState();
@@ -219,6 +222,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       list.add((fingerprint: trusted.fingerprint, alias: '$marker $alias'));
     }
     return list;
+  }
+
+  /// 当前焦点视图的来源别名（本机 / 设备名）。
+  String _focusedSourceLabel() {
+    final slot = _focusIsPaneA ? _paneA : _paneB;
+    if (slot.source == null) return '本机';
+    final device = _onlineDevice(slot.source!);
+    if (device != null) return device.alias;
+    for (final trusted in _trusted) {
+      if (trusted.fingerprint == slot.source) return trusted.alias;
+    }
+    return '离线设备';
+  }
+
+  /// 当前焦点视图的路径（根目录时显示"(根目录)"）。
+  String _focusedPathLabel() {
+    final slot = _focusIsPaneA ? _paneA : _paneB;
+    return slot.path ?? '(根目录)';
+  }
+
+  void _setFocus(bool isPaneA) {
+    if (_focusIsPaneA == isPaneA) return;
+    setState(() => _focusIsPaneA = isPaneA);
   }
 
   void _reloadPanes() {
@@ -386,6 +412,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onPressed: _openDevicesPage,
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(22),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '${_focusedSourceLabel()} · ${_focusedPathLabel()}',
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Color(0xFFB7BCC2)),
+              ),
+            ),
+          ),
+        ),
       ),
       body: Column(
         children: [
@@ -434,38 +474,54 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Expanded(
-                child: _FilePane(
-                  key: _paneAKey,
-                  self: widget.self,
-                  source: _paneA.source,
-                  device: _onlineDevice(_paneA.source ?? ''),
-                  sources: sources,
-                  onSourceChanged: (fp) => setState(() {
-                    _paneA.source = fp;
-                    _paneA.path = null;
-                  }),
-                  onPathChanged: (path) => _paneA.path = path,
-                  onTransferRequested: (entry, fullPath, move) =>
-                      _transferFrom(
-                          from: _paneA, to: _paneB, entry: entry, fullPath: fullPath, move: move),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: () => _setFocus(true),
+                  child: _FilePane(
+                    key: _paneAKey,
+                    self: widget.self,
+                    source: _paneA.source,
+                    device: _onlineDevice(_paneA.source ?? ''),
+                    sources: sources,
+                    onSourceChanged: (fp) => setState(() {
+                      _paneA.source = fp;
+                      _paneA.path = null;
+                      _focusIsPaneA = true;
+                    }),
+                    onPathChanged: (path) => setState(() {
+                      _paneA.path = path;
+                      _focusIsPaneA = true;
+                    }),
+                    onTransferRequested: (entry, fullPath, move) =>
+                        _transferFrom(
+                            from: _paneA, to: _paneB, entry: entry, fullPath: fullPath, move: move),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: _FilePane(
-                  key: _paneBKey,
-                  self: widget.self,
-                  source: _paneB.source,
-                  device: _onlineDevice(_paneB.source ?? ''),
-                  sources: sources,
-                  onSourceChanged: (fp) => setState(() {
-                    _paneB.source = fp;
-                    _paneB.path = null;
-                  }),
-                  onPathChanged: (path) => _paneB.path = path,
-                  onTransferRequested: (entry, fullPath, move) =>
-                      _transferFrom(
-                          from: _paneB, to: _paneA, entry: entry, fullPath: fullPath, move: move),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: () => _setFocus(false),
+                  child: _FilePane(
+                    key: _paneBKey,
+                    self: widget.self,
+                    source: _paneB.source,
+                    device: _onlineDevice(_paneB.source ?? ''),
+                    sources: sources,
+                    onSourceChanged: (fp) => setState(() {
+                      _paneB.source = fp;
+                      _paneB.path = null;
+                      _focusIsPaneA = false;
+                    }),
+                    onPathChanged: (path) => setState(() {
+                      _paneB.path = path;
+                      _focusIsPaneA = false;
+                    }),
+                    onTransferRequested: (entry, fullPath, move) =>
+                        _transferFrom(
+                            from: _paneB, to: _paneA, entry: entry, fullPath: fullPath, move: move),
+                  ),
                 ),
               ),
             ],
@@ -1193,22 +1249,39 @@ class _FilePaneState extends State<_FilePane> {
         return GestureDetector(
           onLongPress: () => _showEntryActions(entry),
           onSecondaryTap: () => _showEntryActions(entry),
-          child: ListTile(
-            dense: true,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-            leading: Icon(_iconFor(entry), size: 20),
-            title: Text(
-              entry.name,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13),
-            ),
-            subtitle: entry.isDir
-                ? null
-                : Text(
-                    '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
-                    style: const TextStyle(fontSize: 11),
-                  ),
+          child: InkWell(
             onTap: () => _select(entry),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Icon(_iconFor(entry), size: 20),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          entry.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                        if (!entry.isDir)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              '${formatBytes(entry.size)}  ·  ${_formatTime(entry.modified)}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         );
       },

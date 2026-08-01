@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Flutter 首帧渲染前使用：无标题栏（windowNoTitle），纯背景过渡，
+         避免系统窗口默认标题条与 Flutter AppBar 的"SyncMate"标题在过渡瞬间叠加显示。 -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+
+    <!-- Flutter 首帧渲染后切换到的正式主题，同样无原生标题栏，
+         页面标题完全交由 Flutter AppBar 渲染，不会出现重复标题行。 -->
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>
