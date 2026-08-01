@@ -43,8 +43,11 @@ jobs:
       - name: 编译 Release APK（分架构，仅 arm64-v8a）
         run: flutter build apk --release --split-per-abi --target-platform android-arm64
 
-      - name: rename
-        run: mv apps/syncmate_android/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk apps/syncmate_android/build/app/outputs/flutter-apk/syncmate-android-arm64-v8a-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncmate-android
+          path: apps/syncmate_android/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          if-no-files-found: error
           
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -53,4 +56,4 @@ jobs:
           name: syncmate test
           prerelease: false
           make_latest: true
-          files: apps/syncmate_android/build/app/outputs/flutter-apk/syncmate-android-arm64-v8a-release.apk
+          files: apps/syncmate_android/build/app/outputs/flutter-apk/*
